@@ -1,0 +1,51 @@
+{
+    "relayer_service": {
+		"host": "0.0.0.0",
+		"port": 9030
+		,
+		"keys_ttl": 86400,
+		"keepalive_secs": 600
+	},
+	"rate_limit": "100000/day;200/minute;20/second",
+	"redis": {
+		"host": "localhost",
+		"port": 6379,
+		"db": 0,
+		"password": null
+	},
+	"reporting": {
+		"slack_url": "https://slack-reporting-url",
+		"service_url": "http://localhost:9030/reportGenericTxnIssue"
+	},
+	"anchor_chain": {
+		"rpc": {
+			"full_nodes": [{
+			  "url": "https://rpc-prost1d.powerloom.io/",
+			  "rate_limit": "100000000/day;18000/minute;300/second"
+			}],
+			"retry": 5,
+			"request_time_out": 5,
+			"connection_limits":{
+			  "max_connections": 100,
+			  "max_keepalive_connections": 50,
+			  "keepalive_expiry": 300
+			}
+		  },
+		"chain_id": 104,
+		"polling_interval":2
+	},
+	"rlimit": {
+		"file_descriptors": 2048
+	},
+	"protocol_state_address": "0xb24553C414e8FD41fB0F19F04B53bbb22ea5EDCf",
+    "signers": [
+        {
+            "address": "0x5A49e189888Ba38b9D4113Efa071DF9bfE77B10D",
+            "private_key": "0x0000"
+        },
+		{
+            "address": "0xFB0cd42862824030e98D7c60Ef4FeBb3dA44cd09",
+            "private_key": "0x0000"
+        }
+    ]
+}
