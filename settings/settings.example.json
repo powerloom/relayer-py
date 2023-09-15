@@ -7,7 +7,7 @@
 	},
 	"rate_limit": "100000/day;200/minute;20/second",
 	"redis": {
-		"host": "localhost",
+		"host": "host.docker.internal",
 		"port": 6379,
 		"db": 0,
 		"password": null
@@ -46,5 +46,6 @@
             "address": "0xFB0cd42862824030e98D7c60Ef4FeBb3dA44cd09",
             "private_key": "0x0000"
         }
-    ]
+    ],
+	"min_signer_balance_eth": 1
 }

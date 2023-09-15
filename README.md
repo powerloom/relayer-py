@@ -1,1 +1,1 @@
- docker rm -f relayer && docker run --add-host host.docker.internal:host-gateway -p 8080:8080 --name relayer -d powerloom-relayer:latest && docker logs -f relayer
+ docker rm -f relayer && docker run --add-host host.docker.internal:host-gateway -p 9000:9000 --name relayer -d powerloom-relayer:latest && docker logs -f relayer
