@@ -2,7 +2,7 @@ from settings.conf import settings
 CHAIN_ID = settings.anchor_chain.chain_id
 
 
-async def write_transaction(w3, address, private_key, contract, contract_address, function, nonce, *args):
+async def write_transaction(w3, address, private_key, contract, function, nonce, *args):
     """ Writes a transaction to the blockchain
 
     Args:
@@ -28,8 +28,6 @@ async def write_transaction(w3, address, private_key, contract, contract_address
         'chainId': CHAIN_ID,
     })
 
-    # replace contract address with the one passed in
-    transaction['to'] = contract_address
     # Sign the transaction
     signed_transaction = w3.eth.account.sign_transaction(
         transaction, private_key=private_key,

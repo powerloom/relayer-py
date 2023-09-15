@@ -1,10 +1,10 @@
 import asyncio
 
 from httpx import AsyncClient
-from loguru import logger
 from pydantic import BaseModel
 
 from settings.conf import settings
+from utils.default_logger import logger
 
 
 logger = logger.bind(
