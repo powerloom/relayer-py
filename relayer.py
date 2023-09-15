@@ -175,9 +175,14 @@ async def submit_snapshot(request: Request, txn_payload: TxnPayload, protocol_st
     receipt = await request.app.state.w3.eth.wait_for_transaction_receipt(tx_hash)
 
     if receipt['status'] == 0:
-        service_logger.info(f'tx_hash: {tx_hash} failed, receipt: {receipt}, txn_payload: {txn_payload}')
+        service_logger.info(
+            f'tx_hash: {tx_hash} failed, receipt: {receipt}, project_id: {txn_payload.projectId}, epoch_id: {txn_payload.epochId}',
+        )
+        # retry
     else:
-        service_logger.info(f'tx_hash: {tx_hash} succeeded!')
+        service_logger.info(
+            f'tx_hash: {tx_hash} succeeded!, project_id: {txn_payload.projectId}, epoch_id: {txn_payload.epochId}',
+        )
 
 
 async def get_protocol_state_contract(request: Request, contract_address: str):
