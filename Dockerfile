@@ -15,7 +15,7 @@ RUN poetry install --no-dev
 COPY . .
 
 # Expose the port that the application will listen on
-EXPOSE 9000
+EXPOSE 8080
 
 ENTRYPOINT sh init_processes.sh
 
