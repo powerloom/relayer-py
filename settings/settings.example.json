@@ -1,8 +1,7 @@
 {
     "relayer_service": {
 		"host": "0.0.0.0",
-		"port": 9030
-		,
+		"port": 9000,
 		"keys_ttl": 86400,
 		"keepalive_secs": 600
 	},

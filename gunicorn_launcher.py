@@ -53,7 +53,7 @@ class StandaloneApplication(BaseApplication):
 if __name__ == '__main__':
 
     options = {
-        'bind': f'{settings.relayer_service.host}:{9030}',
+        'bind': f'{settings.relayer_service.host}:{settings.relayer_service.port}',
         'keepalive': settings.relayer_service.keepalive_secs,
         'workers': len(settings.signers),
         'timeout': 120,
