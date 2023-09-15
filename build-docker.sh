@@ -1,1 +1,1 @@
-docker build -t powerloom-onchain-consensus .
+docker build -t powerloom-relayer .
