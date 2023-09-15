@@ -171,6 +171,8 @@ async def submit_snapshot(request: Request, txn_payload: TxnPayload, protocol_st
                 )
                 service_logger.info(f'nonce reset to: {request.app.state.signer_nonce}')
                 raise Exception('nonce error, reset nonce')
+            else:
+                raise Exception('other error, still retrying')
 
     receipt = await request.app.state.w3.eth.wait_for_transaction_receipt(tx_hash)
 
