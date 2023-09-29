@@ -21,6 +21,7 @@ from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
 
 from data_models import TxnPayload
+from data_models import WalletRegistrationRequest
 from settings.conf import settings
 from utils.default_logger import logger
 from utils.rate_limiter import load_rate_limiter_scripts
@@ -31,6 +32,12 @@ from utils.transaction_utils import write_transaction
 service_logger = logger.bind(
     service='PowerLoom|OnChainConsensus|Relayer',
 )
+
+ALLOWED_PROJECT_TYPES = [
+    'boost:bungee_bridge', 'boost:owlto_bridge', 'boost:quickswap_usdc_swap',
+    'boost:quickswap_dai_swap', 'boost:quickswap_eth_usdc_lp', 'boost:safe_create',
+]
+ALLOWED_NAMESPACES = ['1101']
 
 # setup CORS origins stuff
 origins = ['*']
@@ -210,6 +217,69 @@ async def get_protocol_state_contract(request: Request, contract_address: str):
         ]
 
 
+@app.post('/updateAddress')
+async def udpate_address(
+    request: Request,
+    req_parsed: WalletRegistrationRequest,
+    response: Response,
+):
+    # random token for security
+    TOKEN = 'a682e9850528252806a32607f11b2fe42b32288f634c310d23604126b3820d83'
+
+    # check if token is valid
+    if req_parsed.token != TOKEN:
+        return JSONResponse(status_code=401, content={'message': 'Invalid token!'})
+
+    # check if address is valid
+    if not request.app.state.w3.is_address(req_parsed.walletAddress):
+        return JSONResponse(status_code=400, content={'message': 'Invalid address!'})
+
+    # if req_parsed.allowed is True, then add address to redis htable
+    if req_parsed.allowed:
+        await request.app.state.writer_redis_pool.hset('wallets', req_parsed.walletAddress, 'true')
+        return JSONResponse(status_code=200, content={'message': 'Address registered!'})
+    else:
+        await request.app.state.writer_redis_pool.hset('wallets', req_parsed.walletAddress, 'false')
+        return JSONResponse(status_code=200, content={'message': 'Address unregistered!'})
+
+
+@app.get('/isProjectAllowed/{project_id}')
+async def is_project_allowed(request: Request, project_id: str):
+    """
+    Check if project is allowed
+    """
+    project_split_data = project_id.split(':')
+
+    if len(project_split_data) < 4:
+        return False
+
+    namespace = project_split_data[-1]
+    wallet_address = project_split_data[-2]
+
+    task_type = ':'.join(project_split_data[:-2])
+
+    # check if task type is allowed
+    if task_type not in ALLOWED_PROJECT_TYPES:
+        return False
+
+    # check if namespace is allowed
+    if namespace not in ALLOWED_NAMESPACES:
+        return False
+
+    # check if wallet address is present in redis
+    wallet_address = request.app.state.w3.to_checksum_address(wallet_address)
+
+    data = await request.app.state.reader_redis_pool.hget('wallets', wallet_address)
+
+    if data is None:
+        return False
+
+    if data.decode('utf-8') == 'true':
+        return True
+    else:
+        return False
+
+
 @app.post('/submitSnapshot')
 async def submit(
     request: Request,
@@ -220,28 +290,14 @@ async def submit(
     Submit Snapshot
     """
 
-    # estimate gas and continue only if transaction will succeed
+    if not await is_project_allowed(request, req_parsed.projectId):
+        return JSONResponse(status_code=400, content={'message': 'Project not allowed!'})
+
     try:
         protocol_state_contract = await get_protocol_state_contract(request, req_parsed.contractAddress)
-        gas_estimate = await protocol_state_contract.functions.submitSnapshot(
-            req_parsed.snapshotCid,
-            req_parsed.epochId,
-            req_parsed.projectId,
-            (
-                req_parsed.request.deadline, req_parsed.request.snapshotCid,
-                req_parsed.request.epochId, req_parsed.request.projectId,
-            ),
-            req_parsed.signature,
-        ).estimate_gas(
-            {
-                'from': request.app.state.signer_account,
-                'nonce': request.app.state.signer_nonce,
-            },
-        )
-
         asyncio.ensure_future(submit_snapshot(request, req_parsed, protocol_state_contract))
 
-        return JSONResponse(status_code=200, content={'message': f'Submitted Snapshot to relayer, estimated gas usage is: {gas_estimate} wei'})
+        return JSONResponse(status_code=200, content={'message': f'Submitted Snapshot to relayer!'})
 
     except Exception as e:
         service_logger.error(f'Exception: {e}')

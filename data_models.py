@@ -103,3 +103,9 @@ class TxnPayload(BaseModel):
     request: SignRequest
     signature: str
     contractAddress: str
+
+
+class WalletRegistrationRequest(BaseModel):
+    walletAddress: str
+    allowed: bool
+    token: str
