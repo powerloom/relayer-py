@@ -262,13 +262,36 @@ async def _get_signer_address(request: FastAPIRequest, txn_payload: TxnPayload):
     return signer_address
 
 
-@app.get('/isProjectAllowed/{project_id}')
-async def is_project_allowed(request: FastAPIRequest, txn_payload: TxnPayload):
-    """
-    Is Project Allowed
-    """
-    print(await _get_signer_address(request, txn_payload))
-    return True
+async def _check(request: FastAPIRequest, txn_payload: TxnPayload):
+    monitored_pairs = [
+        '0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc',
+        '0x517f9dd285e75b599234f7221227339478d0fcc8',
+        '0xe1573b9d29e2183b1af0e743dc2754979a40d237',
+        '0x819f3450da6f110ba6ea52195b3beafa246062de',
+        '0xbb2b8038a1640196fbe3e38816f3e67cba72d940',
+    ]
+    current_epoch = txn_payload.epochId
+    snapshotter_address = await _get_signer_address(request, txn_payload)
+    snapshotter_hash = hash(int(snapshotter_address, 16))
+
+    protocol_state_contract = await get_protocol_state_contract(request, txn_payload.contractAddress)
+    current_day = await protocol_state_contract.functions.dayCounter().call()
+
+    pair_idx = (current_epoch + snapshotter_hash + current_day) % len(monitored_pairs)
+
+    # projectId check
+    if monitored_pairs[pair_idx].lower() not in txn_payload.projectId.lower():
+        return False
+
+    N = 8
+    epochs_in_a_day = 720
+
+    # slot check
+    snapshotter_slot = hash(int(snapshotter_address.lower(), 16)) % N
+
+    if (txn_payload.epochId % epochs_in_a_day) // (epochs_in_a_day // N) == snapshotter_slot:
+        return True
+    return False
 
 
 @app.post('/submitSnapshot')
@@ -281,10 +304,8 @@ async def submit(
     Submit Snapshot
     """
 
-    if not await is_project_allowed(request, req_parsed):
+    if not await _check(request, req_parsed):
         return JSONResponse(status_code=400, content={'message': 'Project not allowed!'})
-
-    return JSONResponse(status_code=200, content={'message': 'Submitted Snapshot to relayer!'})
 
     try:
         protocol_state_contract = await get_protocol_state_contract(request, req_parsed.contractAddress)
