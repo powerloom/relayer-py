@@ -45,7 +45,9 @@ def keccak_hash(x):
 
 
 request_typehash = keccak_hash(
-    'Request(uint256 deadline,string snapshotCid,uint256 epochId,string projectId)'.encode('utf-8'),
+    'Request(uint256 deadline,string snapshotCid,uint256 epochId,string projectId)'.encode(
+        'utf-8',
+    ),
 )
 
 service_logger = logger.bind(
@@ -128,7 +130,11 @@ async def startup_boilerplate():
         # load abi from json file and create contract object
         with open('utils/static/abi.json', 'r') as f:
             app.state.abi = json.load(f)
-        app.state.w3 = AsyncWeb3(AsyncHTTPProvider(settings.anchor_chain.rpc.full_nodes[0].url))
+        app.state.w3 = AsyncWeb3(
+            AsyncHTTPProvider(
+                settings.anchor_chain.rpc.full_nodes[0].url,
+            ),
+        )
 
         app.state.protocol_state_contract = app.state.w3.eth.contract(
             address=settings.protocol_state_address, abi=app.state.abi,
@@ -143,7 +149,9 @@ async def startup_boilerplate():
         # convert to eth
         balance = app.state.w3.from_wei(balance, 'ether')
         if balance < settings.min_signer_balance_eth:
-            service_logger.error(f'Signer {app.state.signer_account} has insufficient balance: {balance} ETH')
+            service_logger.error(
+                f'Signer {app.state.signer_account} has insufficient balance: {balance} ETH',
+            )
             exit(1)
 
         service_logger.info(
@@ -184,7 +192,9 @@ async def submit_snapshot(request: FastAPIRequest, txn_payload: TxnPayload, prot
 
             request.app.state.signer_nonce += 1
 
-            service_logger.info(f'submitted transaction with tx_hash: {tx_hash}')
+            service_logger.info(
+                f'submitted transaction with tx_hash: {tx_hash}',
+            )
 
         except Exception as e:
             service_logger.error(f'Exception: {e}')
@@ -195,7 +205,9 @@ async def submit_snapshot(request: FastAPIRequest, txn_payload: TxnPayload, prot
                 request.app.state.signer_nonce = await request.app.state.w3.eth.get_transaction_count(
                     request.app.state.signer_account,
                 )
-                service_logger.info(f'nonce reset to: {request.app.state.signer_nonce}')
+                service_logger.info(
+                    f'nonce reset to: {request.app.state.signer_nonce}',
+                )
                 raise Exception('nonce error, reset nonce')
             else:
                 raise Exception('other error, still retrying')
@@ -253,12 +265,16 @@ async def _get_signer_address(request: FastAPIRequest, txn_payload: TxnPayload):
     domain_separator = make_domain(
         name='PowerloomProtocolContract',
         version='0.1', chainId=103,
-        verifyingContract='0x507bd87d7F08C8c6C8Da17dAb36CdEc6b88d4E3e',
+        verifyingContract=request.app.state.w3.to_checksum_address(
+            txn_payload.contractAddress,
+        ),
     )
 
     signable_bytes = signature_request.signable_bytes(domain_separator)
     message_hash = keccak_hash(signable_bytes)
-    signer_address = request.app.state.w3.eth.account._recover_hash(message_hash, signature=signature)
+    signer_address = request.app.state.w3.eth.account._recover_hash(
+        message_hash, signature=signature,
+    )
     return signer_address
 
 
@@ -270,28 +286,22 @@ async def _check(request: FastAPIRequest, txn_payload: TxnPayload):
         '0x819f3450da6f110ba6ea52195b3beafa246062de',
         '0xbb2b8038a1640196fbe3e38816f3e67cba72d940',
     ]
+
     current_epoch = txn_payload.epochId
     snapshotter_address = await _get_signer_address(request, txn_payload)
-    snapshotter_hash = hash(int(snapshotter_address, 16))
+    snapshotter_hash = hash(int(snapshotter_address.lower(), 16))
 
     protocol_state_contract = await get_protocol_state_contract(request, txn_payload.contractAddress)
     current_day = await protocol_state_contract.functions.dayCounter().call()
 
-    pair_idx = (current_epoch + snapshotter_hash + current_day) % len(monitored_pairs)
-
+    pair_idx = (
+        current_epoch + snapshotter_hash +
+        current_day
+    ) % len(monitored_pairs)
     # projectId check
     if monitored_pairs[pair_idx].lower() not in txn_payload.projectId.lower():
         return False
-
-    N = 8
-    epochs_in_a_day = 720
-
-    # slot check
-    snapshotter_slot = hash(int(snapshotter_address.lower(), 16)) % N
-
-    if (txn_payload.epochId % epochs_in_a_day) // (epochs_in_a_day // N) == snapshotter_slot:
-        return True
-    return False
+    return True
 
 
 @app.post('/submitSnapshot')
@@ -305,11 +315,16 @@ async def submit(
     """
 
     if not await _check(request, req_parsed):
-        return JSONResponse(status_code=400, content={'message': 'Project not allowed!'})
+
+        return JSONResponse(status_code=401, content={'message': 'Project not allowed!'})
 
     try:
         protocol_state_contract = await get_protocol_state_contract(request, req_parsed.contractAddress)
-        asyncio.ensure_future(submit_snapshot(request, req_parsed, protocol_state_contract))
+        asyncio.ensure_future(
+            submit_snapshot(
+                request, req_parsed, protocol_state_contract,
+            ),
+        )
 
         return JSONResponse(status_code=200, content={'message': 'Submitted Snapshot to relayer!'})
 
