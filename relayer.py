@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 import json
 import os
 import time
@@ -20,12 +21,15 @@ from tenacity import wait_random_exponential
 from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
 
-from data_models import TxnPayload
+from httpx import AsyncClient
+
+from data_models import RelayerIssue, TxnPayload
 from settings.conf import settings
 from utils.default_logger import logger
 from utils.rate_limiter import load_rate_limiter_scripts
 from utils.redis_conn import RedisPool
 from utils.transaction_utils import write_transaction
+from utils.notification_utils import send_failure_notifications
 
 
 service_logger = logger.bind(
@@ -162,7 +166,7 @@ async def submit_snapshot(request: Request, txn_payload: TxnPayload, protocol_st
 
         except Exception as e:
             service_logger.error(f'Exception: {e}')
-
+            
             if 'nonce' in str(e):
                 # sleep for 10 seconds and reset nonce
                 time.sleep(10)
@@ -245,4 +249,13 @@ async def submit(
 
     except Exception as e:
         service_logger.error(f'Exception: {e}')
+        # send failure notification
+        await send_failure_notifications(
+            AsyncClient(),
+            message=RelayerIssue(
+                timeOfReporting=datetime.now().isoformat(),
+                issueType='relayer failed to submit snapshot',
+                extra=str(e),
+                ) 
+            )
         return JSONResponse(status_code=500, content={'message': 'Invalid request payload!'})

@@ -103,3 +103,8 @@ class TxnPayload(BaseModel):
     request: SignRequest
     signature: str
     contractAddress: str
+
+class RelayerIssue(BaseModel):
+    timeOfReporting: str
+    issueType: str
+    extra: Optional[str] = ''
