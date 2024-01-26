@@ -121,6 +121,7 @@ async def startup_boilerplate():
         # convert to eth
         balance = app.state.w3.from_wei(balance, 'ether')
         if balance < settings.min_signer_balance_eth:
+
             service_logger.error(f'Signer {app.state.signer_account} has insufficient balance: {balance} ETH')
             exit(1)
 
@@ -166,6 +167,15 @@ async def submit_snapshot(request: Request, txn_payload: TxnPayload, protocol_st
 
         except Exception as e:
             service_logger.error(f'Exception: {e}')
+
+            await send_failure_notifications(
+                AsyncClient(),
+                message=RelayerIssue(
+                    timeOfReporting=datetime.now().isoformat(),
+                    issueType='relayer failed to submit snapshot',
+                    extra=str(e),
+                    ) 
+                )   
             
             if 'nonce' in str(e):
                 # sleep for 10 seconds and reset nonce
@@ -250,12 +260,5 @@ async def submit(
     except Exception as e:
         service_logger.error(f'Exception: {e}')
         # send failure notification
-        await send_failure_notifications(
-            AsyncClient(),
-            message=RelayerIssue(
-                timeOfReporting=datetime.now().isoformat(),
-                issueType='relayer failed to submit snapshot',
-                extra=str(e),
-                ) 
-            )
+
         return JSONResponse(status_code=500, content={'message': 'Invalid request payload!'})
