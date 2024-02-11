@@ -130,6 +130,11 @@ async def startup_boilerplate():
         # load abi from json file and create contract object
         with open('utils/static/abi.json', 'r') as f:
             app.state.abi = json.load(f)
+
+        # load pairs
+        with open('utils/static/pairs.json', 'r') as f:
+            app.state.pairs = json.load(f)
+
         app.state.w3 = AsyncWeb3(
             AsyncHTTPProvider(
                 settings.anchor_chain.rpc.full_nodes[0].url,
@@ -180,12 +185,14 @@ async def submit_snapshot(request: FastAPIRequest, txn_payload: TxnPayload, prot
                 protocol_state_contract,
                 'submitSnapshot',
                 _nonce,
+                txn_payload.slotId,
                 txn_payload.snapshotCid,
                 txn_payload.epochId,
                 txn_payload.projectId,
                 (
-                    txn_payload.request.deadline, txn_payload.request.snapshotCid,
-                    txn_payload.request.epochId, txn_payload.request.projectId,
+                    txn_payload.request.slotId, txn_payload.request.deadline,
+                    txn_payload.request.snapshotCid, txn_payload.request.epochId,
+                    txn_payload.request.projectId,
                 ),
                 txn_payload.signature,
             )
@@ -279,27 +286,19 @@ async def _get_signer_address(request: FastAPIRequest, txn_payload: TxnPayload):
 
 
 async def _check(request: FastAPIRequest, txn_payload: TxnPayload):
-    monitored_pairs = [
-        '0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc',
-        '0x517f9dd285e75b599234f7221227339478d0fcc8',
-        '0xe1573b9d29e2183b1af0e743dc2754979a40d237',
-        '0x819f3450da6f110ba6ea52195b3beafa246062de',
-        '0xbb2b8038a1640196fbe3e38816f3e67cba72d940',
-    ]
 
     current_epoch = txn_payload.epochId
     snapshotter_address = await _get_signer_address(request, txn_payload)
     snapshotter_hash = hash(int(snapshotter_address.lower(), 16))
 
-    protocol_state_contract = await get_protocol_state_contract(request, txn_payload.contractAddress)
-    current_day = await protocol_state_contract.functions.dayCounter().call()
+    current_day = current_epoch//720
 
     pair_idx = (
-        current_epoch + snapshotter_hash +
+        current_epoch + snapshotter_hash + txn_payload.slotId +
         current_day
-    ) % len(monitored_pairs)
+    ) % len(request.app.state.pairs)
     # projectId check
-    if monitored_pairs[pair_idx].lower() not in txn_payload.projectId.lower():
+    if request.app.state.pairs[pair_idx].lower() not in txn_payload.projectId.lower():
         return False
     return True
 
@@ -320,13 +319,25 @@ async def submit(
 
     try:
         protocol_state_contract = await get_protocol_state_contract(request, req_parsed.contractAddress)
+        gas_estimate = await protocol_state_contract.functions.submitSnapshot(
+            req_parsed.slotId,
+            req_parsed.snapshotCid,
+            req_parsed.epochId,
+            req_parsed.projectId,
+            (
+                req_parsed.request.slotId, req_parsed.request.deadline,
+                req_parsed.request.snapshotCid, req_parsed.request.epochId,
+                req_parsed.request.projectId,
+            ),
+        )
+
         asyncio.ensure_future(
             submit_snapshot(
                 request, req_parsed, protocol_state_contract,
             ),
         )
 
-        return JSONResponse(status_code=200, content={'message': 'Submitted Snapshot to relayer!'})
+        return JSONResponse(status_code=200, content={'message': f'Submitted Snapshot to relayer, estimated gas usage is: {gas_estimate} wei'})
 
     except Exception as e:
         service_logger.error(f'Exception: {e}')

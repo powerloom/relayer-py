@@ -90,6 +90,7 @@ class GenericTxnIssue(BaseModel):
 
 
 class SignRequest(BaseModel):
+    slotId: int
     deadline: int
     snapshotCid: str
     epochId: int
@@ -97,6 +98,7 @@ class SignRequest(BaseModel):
 
 
 class TxnPayload(BaseModel):
+    slotId: int
     projectId: str
     snapshotCid: str
     epochId: int
