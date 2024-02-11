@@ -102,7 +102,11 @@ async def startup_boilerplate():
         # load abi from json file and create contract object
         with open('utils/static/abi.json', 'r') as f:
             app.state.abi = json.load(f)
-        app.state.w3 = AsyncWeb3(AsyncHTTPProvider(settings.anchor_chain.rpc.full_nodes[0].url))
+        app.state.w3 = AsyncWeb3(
+            AsyncHTTPProvider(
+                settings.anchor_chain.rpc.full_nodes[0].url,
+            ),
+        )
 
         app.state.protocol_state_contract = app.state.w3.eth.contract(
             address=settings.protocol_state_address, abi=app.state.abi,
@@ -117,7 +121,9 @@ async def startup_boilerplate():
         # convert to eth
         balance = app.state.w3.from_wei(balance, 'ether')
         if balance < settings.min_signer_balance_eth:
-            service_logger.error(f'Signer {app.state.signer_account} has insufficient balance: {balance} ETH')
+            service_logger.error(
+                f'Signer {app.state.signer_account} has insufficient balance: {balance} ETH',
+            )
             exit(1)
 
         service_logger.info(
@@ -146,19 +152,23 @@ async def submit_snapshot(request: Request, txn_payload: TxnPayload, protocol_st
                 protocol_state_contract,
                 'submitSnapshot',
                 _nonce,
+                txn_payload.slotId,
                 txn_payload.snapshotCid,
                 txn_payload.epochId,
                 txn_payload.projectId,
                 (
-                    txn_payload.request.deadline, txn_payload.request.snapshotCid,
-                    txn_payload.request.epochId, txn_payload.request.projectId,
+                    txn_payload.request.slotId, txn_payload.request.deadline,
+                    txn_payload.request.snapshotCid, txn_payload.request.epochId,
+                    txn_payload.request.projectId,
                 ),
                 txn_payload.signature,
             )
 
             request.app.state.signer_nonce += 1
 
-            service_logger.info(f'submitted transaction with tx_hash: {tx_hash}')
+            service_logger.info(
+                f'submitted transaction with tx_hash: {tx_hash}',
+            )
 
         except Exception as e:
             service_logger.error(f'Exception: {e}')
@@ -169,7 +179,9 @@ async def submit_snapshot(request: Request, txn_payload: TxnPayload, protocol_st
                 request.app.state.signer_nonce = await request.app.state.w3.eth.get_transaction_count(
                     request.app.state.signer_account,
                 )
-                service_logger.info(f'nonce reset to: {request.app.state.signer_nonce}')
+                service_logger.info(
+                    f'nonce reset to: {request.app.state.signer_nonce}',
+                )
                 raise Exception('nonce error, reset nonce')
             else:
                 raise Exception('other error, still retrying')
@@ -224,12 +236,14 @@ async def submit(
     try:
         protocol_state_contract = await get_protocol_state_contract(request, req_parsed.contractAddress)
         gas_estimate = await protocol_state_contract.functions.submitSnapshot(
+            req_parsed.slotId,
             req_parsed.snapshotCid,
             req_parsed.epochId,
             req_parsed.projectId,
             (
-                req_parsed.request.deadline, req_parsed.request.snapshotCid,
-                req_parsed.request.epochId, req_parsed.request.projectId,
+                req_parsed.request.slotId, req_parsed.request.deadline,
+                req_parsed.request.snapshotCid, req_parsed.request.epochId,
+                req_parsed.request.projectId,
             ),
             req_parsed.signature,
         ).estimate_gas(
@@ -239,7 +253,11 @@ async def submit(
             },
         )
 
-        asyncio.ensure_future(submit_snapshot(request, req_parsed, protocol_state_contract))
+        asyncio.ensure_future(
+            submit_snapshot(
+                request, req_parsed, protocol_state_contract,
+            ),
+        )
 
         return JSONResponse(status_code=200, content={'message': f'Submitted Snapshot to relayer, estimated gas usage is: {gas_estimate} wei'})
 
