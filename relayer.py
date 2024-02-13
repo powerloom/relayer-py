@@ -34,6 +34,7 @@ from utils.transaction_utils import write_transaction
 
 
 class Request(EIP712Struct):
+    slotId = Uint()
     deadline = Uint()
     snapshotCid = String()
     epochId = Uint()
@@ -44,21 +45,9 @@ def keccak_hash(x):
     return sha3.keccak_256(x).digest()
 
 
-request_typehash = keccak_hash(
-    'Request(uint256 deadline,string snapshotCid,uint256 epochId,string projectId)'.encode(
-        'utf-8',
-    ),
-)
-
 service_logger = logger.bind(
     service='PowerLoom|OnChainConsensus|Relayer',
 )
-
-ALLOWED_PROJECT_TYPES = [
-    'boost:bungee_bridge', 'boost:owlto_bridge', 'boost:quickswap_usdc_swap',
-    'boost:quickswap_dai_swap', 'boost:quickswap_eth_usdc_lp', 'boost:safe_create',
-]
-ALLOWED_NAMESPACES = ['1101']
 
 # setup CORS origins stuff
 origins = ['*']
@@ -263,6 +252,7 @@ async def _get_signer_address(request: FastAPIRequest, txn_payload: TxnPayload):
     request_ = txn_payload.request.dict()
     signature = bytes.fromhex(txn_payload.signature[2:])
     signature_request = Request(
+        slotId=request_['slotId'],
         deadline=request_['deadline'],
         snapshotCid=request_['snapshotCid'],
         epochId=request_['epochId'],
@@ -291,7 +281,7 @@ async def _check(request: FastAPIRequest, txn_payload: TxnPayload):
     snapshotter_address = await _get_signer_address(request, txn_payload)
     snapshotter_hash = hash(int(snapshotter_address.lower(), 16))
 
-    current_day = current_epoch//720
+    current_day = current_epoch // 720
 
     pair_idx = (
         current_epoch + snapshotter_hash + txn_payload.slotId +
@@ -329,6 +319,11 @@ async def submit(
                 req_parsed.request.snapshotCid, req_parsed.request.epochId,
                 req_parsed.request.projectId,
             ),
+            req_parsed.signature,
+        ).estimate_gas(
+            {
+                'from': request.app.state.signer_account,
+            },
         )
 
         asyncio.ensure_future(
@@ -340,5 +335,5 @@ async def submit(
         return JSONResponse(status_code=200, content={'message': f'Submitted Snapshot to relayer, estimated gas usage is: {gas_estimate} wei'})
 
     except Exception as e:
-        service_logger.error(f'Exception: {e}')
+        service_logger.opt(exception=True).error(f'Exception: {e}')
         return JSONResponse(status_code=500, content={'message': 'Invalid request payload!'})
