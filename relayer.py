@@ -281,7 +281,7 @@ async def _check(request: FastAPIRequest, txn_payload: TxnPayload):
     snapshotter_address = await _get_signer_address(request, txn_payload)
     snapshotter_hash = hash(int(snapshotter_address.lower(), 16))
 
-    current_day = current_epoch // 720
+    current_day = (current_epoch // 720)+1
 
     pair_idx = (
         current_epoch + snapshotter_hash + txn_payload.slotId +
