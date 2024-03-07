@@ -304,8 +304,7 @@ async def submit(
     """
 
     if not await _check(request, req_parsed):
-
-        return JSONResponse(status_code=401, content={'message': 'Project not allowed!'})
+        return JSONResponse(status_code=200, content={'message': 'Snapshot received but not submitted to chain because _check failed!'})
 
     try:
         protocol_state_contract = await get_protocol_state_contract(request, req_parsed.contractAddress)
