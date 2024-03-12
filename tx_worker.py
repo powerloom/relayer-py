@@ -103,7 +103,7 @@ class TxWorker(GenericAsyncWorker):
 
         if receipt['status'] == 0:
             self._logger.info(
-                f'tx_hash: {tx_hash} failed, receipt: {receipt}, project_id: {txn_payload.projectId}, epoch_id: {txn_payload.epochId}',
+                f'tx_hash: {tx_hash} failed, receipt: {receipt}, payload: {txn_payload}',
             )
             # retry
         else:

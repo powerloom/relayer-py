@@ -26,12 +26,14 @@ from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
 
 from data_models import TxnPayload
+from helpers.redis_keys import timeslot_preference
 from init_rabbitmq import get_core_exchange_name
 from init_rabbitmq import get_tx_send_q_routing_key
 from settings.conf import settings
 from utils.default_logger import logger
 from utils.helpers import get_rabbitmq_channel
 from utils.helpers import get_rabbitmq_robust_connection_async
+from utils.redis_conn import RedisPool
 
 # day buffer due to chain migration or other issues
 DAY_BUFFER = 23
@@ -101,6 +103,10 @@ async def request_middleware(request: FastAPIRequest, call_next: Any) -> Optiona
 
 @app.on_event('startup')
 async def startup_boilerplate():
+    app.state.aioredis_pool = RedisPool(writer_redis_conf=settings.redis)
+    await app.state.aioredis_pool.populate()
+    app.state.reader_redis_pool = app.state.aioredis_pool.reader_redis_pool
+    app.state.writer_redis_pool = app.state.aioredis_pool.writer_redis_pool
     app.state.rmq_connection_pool = Pool(
         get_rabbitmq_robust_connection_async, max_size=5, loop=asyncio.get_running_loop(),
     )
@@ -108,6 +114,10 @@ async def startup_boilerplate():
         partial(get_rabbitmq_channel, app.state.rmq_connection_pool), max_size=20,
         loop=asyncio.get_running_loop(),
     )
+    # load abi from json file and create contract object
+    with open('utils/static/abi.json', 'r') as f:
+        app.state.abi = json.load(f)
+
     # load pairs
     with open('utils/static/pairs.json', 'r') as f:
         app.state.pairs = json.load(f)
@@ -116,6 +126,16 @@ async def startup_boilerplate():
         AsyncHTTPProvider(
             settings.anchor_chain.rpc.full_nodes[0].url,
         ),
+    )
+    app.state.protocol_state_contract = app.state.w3.eth.contract(
+        address=settings.protocol_state_address, abi=app.state.abi,
+    )
+
+    app.state.slots_per_day = await app.state.protocol_state_contract.functions.SLOTS_PER_DAY().call()
+    app.state.epoch_size = await app.state.protocol_state_contract.functions.EPOCH_SIZE().call()
+    app.state.source_chain_block_time = (await app.state.protocol_state_contract.functions.SOURCE_CHAIN_BLOCK_TIME().call()) / 1e4
+    app.state.epochs_in_a_day = 86400 // (
+        app.state.epoch_size * app.state.source_chain_block_time
     )
 
 
@@ -194,6 +214,22 @@ async def _get_signer_address(request: FastAPIRequest, txn_payload: TxnPayload):
 
 
 async def _check(request: FastAPIRequest, txn_payload: TxnPayload):
+    # get timeslot preference
+    timeslot_pref = await request.app.state.reader_redis_pool.get(timeslot_preference(txn_payload.slotId))
+    if timeslot_pref:
+        timeslot_pref = int(timeslot_pref.decode('utf-8'))
+    else:
+        timeslot_pref = await request.app.state.protocol_state_contract.functions.getSnapshotterTimeSlot(
+            txn_payload.slotId,
+        ).call()
+        if timeslot_pref:
+            await request.app.state.writer_redis_pool.set(
+                timeslot_preference(txn_payload.slotId), timeslot_pref,
+            )
+    if not timeslot_pref:
+        return False
+    if (txn_payload.epochId % request.app.state.epochs_in_a_day) // (request.app.state.epochs_in_a_day // request.app.state.slots_per_day) != timeslot_pref - 1:
+        return False
 
     current_epoch = txn_payload.epochId
     snapshotter_address = await _get_signer_address(request, txn_payload)
