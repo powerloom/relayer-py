@@ -21,6 +21,7 @@ import httpx
 import psutil
 import redis
 from eth_utils.address import to_checksum_address
+from tx_worker import TxWorker
 from utils.default_logger import logger
 from utils.helpers import cleanup_proc_hub_children
 from utils.redis_conn import provide_redis_conn_repsawning_thread
@@ -241,14 +242,14 @@ class TxWorkerLauncherCore(Process):
                 '-' +
                 unique_id
             )
-            snapshot_worker_obj: Process = SnapshotSigningWorker(name=unique_name)
+            snapshot_worker_obj: Process = TxWorker(name=unique_name, worker_idx=_)
             snapshot_worker_obj.start()
             self._spawned_cb_processes_map['signing_workers'].update(
                 {unique_id: ProcessorWorkerDetails(unique_name=unique_name, pid=snapshot_worker_obj.pid)},
             )
             self._logger.debug(
                 (
-                    'Process Hub Core launched process {} for'
+                    'Tx Worker Core launched process {} for'
                     ' worker type {} with PID: {}'
                 ),
                 unique_name,
