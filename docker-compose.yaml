@@ -1,0 +1,51 @@
+version: '3.9'
+
+services:
+  relayer:
+    image: powerloom-relayer
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    links:
+      - "redis"
+      - "rabbitmq"
+    expose:
+      - 8080
+    ports:
+      - 8080:8080
+    command:
+      bash -c "sh init_processes.sh"
+
+  redis:
+    command: redis-server --appendonly yes
+    image: "redis:alpine"
+    expose:
+      - 6379
+    ports:
+      - 6379:6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: on-failure
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    #command: ["daemon"]
+    expose:
+      - 15672
+      - 5672
+    ports:
+      - 5672:5672
+      - 15672:15672
+    healthcheck:
+      test: rabbitmq-diagnostics check_port_connectivity
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: on-failure

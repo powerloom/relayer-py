@@ -12,6 +12,12 @@
 		"db": 0,
 		"password": null
 	},
+	"rabbitmq": {
+		"user": "guest",
+		"password": "guest",
+		"host": "rabbitmq",
+		"port": 5672
+	},
 	"reporting": {
 		"slack_url": "https://slack-reporting-url",
 		"service_url": "http://localhost:9030/reportGenericTxnIssue"

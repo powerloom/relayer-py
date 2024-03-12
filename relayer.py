@@ -1,15 +1,14 @@
 import asyncio
-from functools import partial
 import json
-import os
-import time
 import uuid
+from functools import partial
 from typing import Any
 from typing import Dict
 from typing import Optional
+
+import sha3
 from aio_pika import Message
 from aio_pika.pool import Pool
-import sha3
 from eip712_structs import EIP712Struct
 from eip712_structs import make_domain
 from eip712_structs import String
@@ -27,13 +26,15 @@ from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
 
 from data_models import TxnPayload
-from init_rabbitmq import get_core_exchange_name, get_tx_send_q_routing_key
+from init_rabbitmq import get_core_exchange_name
+from init_rabbitmq import get_tx_send_q_routing_key
 from settings.conf import settings
 from utils.default_logger import logger
-from utils.helpers import get_rabbitmq_channel, get_rabbitmq_robust_connection_async
-from utils.rate_limiter import load_rate_limiter_scripts
-from utils.redis_conn import RedisPool
-from utils.transaction_utils import write_transaction
+from utils.helpers import get_rabbitmq_channel
+from utils.helpers import get_rabbitmq_robust_connection_async
+
+# day buffer due to chain migration or other issues
+DAY_BUFFER = 23
 
 
 class Request(EIP712Struct):
@@ -100,10 +101,21 @@ async def request_middleware(request: FastAPIRequest, call_next: Any) -> Optiona
 
 @app.on_event('startup')
 async def startup_boilerplate():
-    app.state.rmq_connection_pool = Pool(get_rabbitmq_robust_connection_async, max_size=5, loop=asyncio.get_running_loop())
+    app.state.rmq_connection_pool = Pool(
+        get_rabbitmq_robust_connection_async, max_size=5, loop=asyncio.get_running_loop(),
+    )
     app.state.rmq_channel_pool = Pool(
         partial(get_rabbitmq_channel, app.state.rmq_connection_pool), max_size=20,
         loop=asyncio.get_running_loop(),
+    )
+    # load pairs
+    with open('utils/static/pairs.json', 'r') as f:
+        app.state.pairs = json.load(f)
+
+    app.state.w3 = AsyncWeb3(
+        AsyncHTTPProvider(
+            settings.anchor_chain.rpc.full_nodes[0].url,
+        ),
     )
 
 
@@ -114,7 +126,7 @@ async def startup_boilerplate():
     wait=wait_random_exponential(multiplier=1, max=10),
     stop=stop_after_attempt(3),
 )
-async def submit_snapshot(request: FastAPIRequest, txn_payload: TxnPayload, protocol_state_contract: Any):
+async def submit_snapshot(request: FastAPIRequest, txn_payload: TxnPayload):
     """
     Submit Snapshot
     """
@@ -167,7 +179,7 @@ async def _get_signer_address(request: FastAPIRequest, txn_payload: TxnPayload):
 
     domain_separator = make_domain(
         name='PowerloomProtocolContract',
-        version='0.1', chainId=103,
+        version='0.1', chainId=settings.anchor_chain.chain_id,
         verifyingContract=request.app.state.w3.to_checksum_address(
             txn_payload.contractAddress,
         ),
@@ -187,7 +199,7 @@ async def _check(request: FastAPIRequest, txn_payload: TxnPayload):
     snapshotter_address = await _get_signer_address(request, txn_payload)
     snapshotter_hash = hash(int(snapshotter_address.lower(), 16))
 
-    current_day = (current_epoch // 720)+1
+    current_day = (current_epoch // 720) + DAY_BUFFER
 
     pair_idx = (
         current_epoch + snapshotter_hash + txn_payload.slotId +
@@ -212,33 +224,12 @@ async def submit(
     if not await _check(request, req_parsed):
         return JSONResponse(status_code=200, content={'message': 'Snapshot received but not submitted to chain because _check failed!'})
 
-    # TODO: remove protocol state contract call
     try:
-        protocol_state_contract = await get_protocol_state_contract(request, req_parsed.contractAddress)
-        gas_estimate = await protocol_state_contract.functions.submitSnapshot(
-            req_parsed.slotId,
-            req_parsed.snapshotCid,
-            req_parsed.epochId,
-            req_parsed.projectId,
-            (
-                req_parsed.request.slotId, req_parsed.request.deadline,
-                req_parsed.request.snapshotCid, req_parsed.request.epochId,
-                req_parsed.request.projectId,
-            ),
-            req_parsed.signature,
-        ).estimate_gas(
-            {
-                'from': request.app.state.signer_account,
-            },
+        await submit_snapshot(
+            request, req_parsed,
         )
 
-        asyncio.ensure_future(
-            submit_snapshot(
-                request, req_parsed, protocol_state_contract,
-            ),
-        )
-
-        return JSONResponse(status_code=200, content={'message': f'Submitted Snapshot to relayer, estimated gas usage is: {gas_estimate} wei'})
+        return JSONResponse(status_code=200, content={'message': 'Submitted Snapshot to relayer!'})
 
     except Exception as e:
         service_logger.opt(exception=True).error(f'Exception: {e}')

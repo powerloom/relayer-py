@@ -1,6 +1,7 @@
 from typing import Tuple
-from fastapi import routing
+
 import pika
+from fastapi import routing
 
 from settings.conf import settings
 from utils.default_logger import logger
@@ -38,11 +39,12 @@ def get_core_exchange_name() -> str:
     Returns:
         str: The name of the core exchange.
     """
-    return f'{settings.rabbitmq.setup.core.exchange}:{settings.protocol_state_address.lower()}'
+    return 'powerloom-relayer'
+
 
 def get_tx_send_q_routing_key() -> Tuple[str, str]:
-    queue_name = f'txSendQueue:{settings.protocol_state_address.lower()}'
-    routing_key = f'txsend:{settings.protocol_state_address.lower()}'
+    queue_name = 'txSendQueue'
+    routing_key = 'txsend'
     return queue_name, routing_key
 
 
@@ -80,6 +82,7 @@ def init_queue(
         exchange_name,
         routing_key,
     )
+
 
 def init_exchanges_queues():
     """

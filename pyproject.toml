@@ -31,6 +31,7 @@ eth-abi = "^4.1.0"
 eth-utils = "^2.2.0"
 eip712-structs = "^1.1.0"
 safe-pysha3 = "^1.0.4"
+psutil = "^5.9.8"
 
 
 [build-system]

@@ -1,26 +1,19 @@
 import asyncio
-import sha3
-import httpx
-import tenacity
 
-from typing import Any, Optional
-from urllib.parse import urljoin
+import sha3
 from aio_pika import IncomingMessage
-from pydantic import ValidationError
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_random_exponential
-import tenacity
-from eip712_structs import make_domain, EIP712Struct
+from eip712_structs import EIP712Struct
 from eip712_structs import String
 from eip712_structs import Uint
-from eth_utils.encoding import big_endian_to_int
+from pydantic import ValidationError
+from tenacity import retry
+from tenacity import retry_if_exception_type
+from tenacity import stop_after_attempt
+from tenacity import wait_random_exponential
 
 from data_models import TxnPayload
 from init_rabbitmq import get_tx_send_q_routing_key
-from settings.conf import settings
-from utils.default_logger import logger
 from utils.generic_worker import GenericAsyncWorker
-from utils.rate_limiter import load_rate_limiter_scripts
-from utils.redis_conn import RedisPool
 from utils.transaction_utils import write_transaction
 
 
@@ -45,9 +38,10 @@ class TxWorker(GenericAsyncWorker):
             name (str): The name of the worker.
             **kwargs: Additional keyword arguments to be passed to the AsyncWorker constructor.
         """
-        self._q, self_rmq_routing = get_tx_send_q_routing_key()
-        super(TxWorker, self).__init__(name=name, worker_idx=worker_idx, **kwargs)
-
+        self._q, self._rmq_routing = get_tx_send_q_routing_key()
+        super(TxWorker, self).__init__(
+            name=name, worker_idx=worker_idx, **kwargs,
+        )
 
     # submitSnapshot
     @retry(
@@ -150,4 +144,3 @@ class TxWorker(GenericAsyncWorker):
             return
         else:
             asyncio.ensure_future(self.submit_snapshot(txn_payload=msg_obj))
-

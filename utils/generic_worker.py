@@ -2,36 +2,32 @@ import asyncio
 import json
 import multiprocessing
 import resource
-import time
-import aiorwlock
-import uvloop
-from web3 import Web3
-from eth_typing import ChecksumAddress
 from functools import partial
-from eth_utils.address import to_normalized_address
 from signal import SIGINT
 from signal import signal
 from signal import SIGQUIT
 from signal import SIGTERM
-from typing import Any, Dict, List
-from typing import Union
+from typing import Any
+from typing import Dict
+from typing import List
 from uuid import uuid4
-from utils.default_logger import logger
-from init_rabbitmq import get_core_exchange_name
-from settings.conf import settings
+
+import aiorwlock
+import uvloop
 from aio_pika import IncomingMessage
-from aio_pika import Message
 from aio_pika.pool import Pool
+from eth_typing import ChecksumAddress
 from eth_utils.crypto import keccak
 from httpx import AsyncHTTPTransport
-from pydantic import BaseModel
-from redis import asyncio as aioredis
-from tenacity import retry
-from tenacity import stop_after_attempt
-from tenacity import wait_random_exponential
-from web3 import AsyncHTTPProvider, AsyncWeb3, Web3
-from eip712_structs import make_domain
-from utils.helpers import get_rabbitmq_channel, get_rabbitmq_robust_connection_async
+from web3 import AsyncHTTPProvider
+from web3 import AsyncWeb3
+from web3 import Web3
+
+from init_rabbitmq import get_core_exchange_name
+from settings.conf import settings
+from utils.default_logger import logger
+from utils.helpers import get_rabbitmq_channel
+from utils.helpers import get_rabbitmq_robust_connection_async
 
 
 class GenericAsyncWorker(multiprocessing.Process):
@@ -45,7 +41,7 @@ class GenericAsyncWorker(multiprocessing.Process):
     _abi: Dict[str, Any]
     _protocol_state_contract: Any
     _pairs: List[str]
-    
+
     def __init__(self, name, worker_idx, **kwargs):
         """
         Initializes a GenericAsyncWorker instance.
@@ -87,7 +83,9 @@ class GenericAsyncWorker(multiprocessing.Process):
         Returns:
             None
         """
-        self._rmq_connection_pool = Pool(get_rabbitmq_robust_connection_async, max_size=5, loop=loop)
+        self._rmq_connection_pool = Pool(
+            get_rabbitmq_robust_connection_async, max_size=5, loop=loop,
+        )
         self._rmq_channel_pool = Pool(
             partial(get_rabbitmq_channel, self._rmq_connection_pool), max_size=20,
             loop=loop,
@@ -115,7 +113,6 @@ class GenericAsyncWorker(multiprocessing.Process):
         """
         pass
 
-
     async def _init_protocol_meta(self):
         with open('utils/static/pairs.json', 'r') as f:
             self._pairs = json.load(f)
@@ -128,11 +125,13 @@ class GenericAsyncWorker(multiprocessing.Process):
                 settings.anchor_chain.rpc.full_nodes[0].url,
             ),
         )
-        self._signer_account = Web3.to_checksum_address(settings.signers[self._worker_idx].address)
+        self._signer_account = Web3.to_checksum_address(
+            settings.signers[self._worker_idx].address,
+        )
         self._signer_nonce = await self._w3.eth.get_transaction_count(self._signer_account)
         self._signer_pkey = settings.signers[self._worker_idx].private_key
         self._protocol_state_contract = self._w3.eth.contract(
-            address=Web3.to_checksum_address(settings.protocol_state_address), abi=self._abi
+            address=Web3.to_checksum_address(settings.protocol_state_address), abi=self._abi,
         )
         balance = await self._w3.eth.get_balance(self._signer_account)
         # convert to eth

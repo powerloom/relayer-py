@@ -3,10 +3,6 @@ import resource
 import threading
 import time
 import uuid
-from data_models import ProcessorWorkerDetails
-from helpers.redis_keys import tx_launcher_core_start_timestamp
-from settings.conf import settings
-from datetime import datetime
 from multiprocessing import Process
 from signal import SIGCHLD
 from signal import SIGINT
@@ -16,15 +12,25 @@ from signal import SIGTERM
 from threading import Thread
 from typing import Dict
 from typing import Optional
-from urllib.parse import urljoin
-import httpx
+
 import psutil
 import redis
-from eth_utils.address import to_checksum_address
+
+from data_models import ProcessorWorkerDetails
+from helpers.redis_keys import tx_launcher_core_start_timestamp
+from settings.conf import settings
 from tx_worker import TxWorker
 from utils.default_logger import logger
 from utils.helpers import cleanup_proc_hub_children
 from utils.redis_conn import provide_redis_conn_repsawning_thread
+
+REDIS_CONN_CONF = {
+    'host': settings.redis.host,
+    'port': settings.redis.port,
+    'password': settings.redis.password,
+    'db': settings.redis.db,
+    'retry_on_error': [redis.exceptions.ReadOnlyError],
+}
 
 
 class TxWorkerLauncherCore(Process):
@@ -41,7 +47,8 @@ class TxWorkerLauncherCore(Process):
         """
 
         Process.__init__(self, name=name, **kwargs)
-        self._spawned_processes_map: Dict[str, Optional[int]] = dict()  # process name to pid map
+        # process name to pid map
+        self._spawned_processes_map: Dict[str, Optional[int]] = dict()
         self._spawned_cb_processes_map: Dict[str, Dict[str, Optional[ProcessorWorkerDetails]]] = (
             dict()
         )  # separate map for callback worker spawns. unique ID -> dict(unique_name, pid)
@@ -74,7 +81,9 @@ class TxWorkerLauncherCore(Process):
             pid,
         )
         p.terminate()
-        self._logger.debug('Waiting for 3 seconds to confirm termination of process')
+        self._logger.debug(
+            'Waiting for 3 seconds to confirm termination of process',
+        )
         gone, alive = psutil.wait_procs([p], timeout=3)
         for p_ in alive:
             self._logger.debug(
@@ -139,7 +148,7 @@ class TxWorkerLauncherCore(Process):
                 name=f'powerloom:relayer:TxWorkerLauncherCore:{settings.protocol_state_address.lower()}:Processes',
                 mapping=proc_id_map,
             )
-            
+
         self._logger.error(
             (
                 'Caught thread shutdown notification event. Deleting process'
@@ -223,7 +232,7 @@ class TxWorkerLauncherCore(Process):
                 )
                 p.kill()
             self._spawned_processes_map = dict()
-    
+
     def _launch_signing_cb_workers(self):
         """
         Launches signing workers based on the configuration specified in the settings.
@@ -235,17 +244,23 @@ class TxWorkerLauncherCore(Process):
         # Starting Snapshot workers
         self._spawned_cb_processes_map['signing_workers'] = dict()
 
-        for _ in range(20):
+        for idx in range(len(settings.signers)):
             unique_id = str(uuid.uuid4())[:5]
             unique_name = (
                 f'Powerloom|Relayer|TxWorker:{settings.protocol_state_address.lower()[:5]}' +
                 '-' +
                 unique_id
             )
-            snapshot_worker_obj: Process = TxWorker(name=unique_name, worker_idx=_)
+            snapshot_worker_obj: Process = TxWorker(
+                name=unique_name, worker_idx=idx,
+            )
             snapshot_worker_obj.start()
             self._spawned_cb_processes_map['signing_workers'].update(
-                {unique_id: ProcessorWorkerDetails(unique_name=unique_name, pid=snapshot_worker_obj.pid)},
+                {
+                    unique_id: ProcessorWorkerDetails(
+                        unique_name=unique_name, pid=snapshot_worker_obj.pid,
+                    ),
+                },
             )
             self._logger.debug(
                 (
@@ -289,7 +304,13 @@ class TxWorkerLauncherCore(Process):
             resource.RLIMIT_NOFILE,
             (settings.rlimit.file_descriptors, hard),
         )
-        
+        self._redis_connection_pool_sync = redis.BlockingConnectionPool(
+            **REDIS_CONN_CONF,
+        )
+        self._redis_conn_sync = redis.Redis(
+            connection_pool=self._redis_connection_pool_sync,
+        )
+
         self._launch_signing_cb_workers()
         self._logger.debug(
             'Starting Internal Process State reporter for Signer Hub Core...',

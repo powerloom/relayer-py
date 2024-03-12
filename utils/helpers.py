@@ -1,12 +1,12 @@
-import aio_pika
-from aio_pika.pool import Pool
-from settings.conf import settings
-from utils.default_logger import logger
-from functools import wraps
 import os
 import sys
-import psutil
-import signal
+from functools import wraps
+
+import aio_pika
+from aio_pika.pool import Pool
+
+from settings.conf import settings
+from utils.default_logger import logger
 
 
 def cleanup_proc_hub_children(fn):
@@ -89,4 +89,3 @@ async def get_rabbitmq_channel(connection_pool) -> aio_pika.Channel:
     """
     async with connection_pool.acquire() as connection:
         return await connection.channel()
-
