@@ -1,4 +1,5 @@
 import asyncio
+from functools import partial
 import json
 import os
 import time
@@ -6,8 +7,8 @@ import uuid
 from typing import Any
 from typing import Dict
 from typing import Optional
-
-import aiorwlock
+from aio_pika import Message
+from aio_pika.pool import Pool
 import sha3
 from eip712_structs import EIP712Struct
 from eip712_structs import make_domain
@@ -26,8 +27,10 @@ from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
 
 from data_models import TxnPayload
+from init_rabbitmq import get_core_exchange_name, get_tx_send_q_routing_key
 from settings.conf import settings
 from utils.default_logger import logger
+from utils.helpers import get_rabbitmq_channel, get_rabbitmq_robust_connection_async
 from utils.rate_limiter import load_rate_limiter_scripts
 from utils.redis_conn import RedisPool
 from utils.transaction_utils import write_transaction
@@ -97,60 +100,11 @@ async def request_middleware(request: FastAPIRequest, call_next: Any) -> Optiona
 
 @app.on_event('startup')
 async def startup_boilerplate():
-    app.state.aioredis_pool = RedisPool(writer_redis_conf=settings.redis)
-    await app.state.aioredis_pool.populate()
-    app.state.reader_redis_pool = app.state.aioredis_pool.reader_redis_pool
-    app.state.writer_redis_pool = app.state.aioredis_pool.writer_redis_pool
-    app.state.rate_limit_lua_script_shas = await load_rate_limiter_scripts(app.state.writer_redis_pool)
-
-    app.state._rwlock = aiorwlock.RWLock()
-    # open pid.json and find the index of pid of the worker
-    worker_pid = os.getpid()
-
-    with open('pid.json', 'r') as pid_file:
-        data = json.load(pid_file)
-
-        # find the index of the worker in the list
-        worker_idx = data.index(worker_pid)
-
-        app.state.signer_account = settings.signers[worker_idx].address
-        app.state.signer_pkey = settings.signers[worker_idx].private_key
-
-        # load abi from json file and create contract object
-        with open('utils/static/abi.json', 'r') as f:
-            app.state.abi = json.load(f)
-
-        # load pairs
-        with open('utils/static/pairs.json', 'r') as f:
-            app.state.pairs = json.load(f)
-
-        app.state.w3 = AsyncWeb3(
-            AsyncHTTPProvider(
-                settings.anchor_chain.rpc.full_nodes[0].url,
-            ),
-        )
-
-        app.state.protocol_state_contract = app.state.w3.eth.contract(
-            address=settings.protocol_state_address, abi=app.state.abi,
-        )
-        app.state.signer_nonce = await app.state.w3.eth.get_transaction_count(app.state.signer_account)
-        app.state.protocol_state_contract_instance_mapping = {}
-        app.state.protocol_state_contract_instance_mapping[
-            app.state.w3.to_checksum_address(settings.protocol_state_address)
-        ] = app.state.protocol_state_contract
-        # check if signer has enough balance
-        balance = await app.state.w3.eth.get_balance(app.state.signer_account)
-        # convert to eth
-        balance = app.state.w3.from_wei(balance, 'ether')
-        if balance < settings.min_signer_balance_eth:
-            service_logger.error(
-                f'Signer {app.state.signer_account} has insufficient balance: {balance} ETH',
-            )
-            exit(1)
-
-        service_logger.info(
-            f'Started worker {worker_idx}, with signer_account: {app.state.signer_account}, signer_nonce: {app.state.signer_nonce}',
-        )
+    app.state.rmq_connection_pool = Pool(get_rabbitmq_robust_connection_async, max_size=5, loop=asyncio.get_running_loop())
+    app.state.rmq_channel_pool = Pool(
+        partial(get_rabbitmq_channel, app.state.rmq_connection_pool), max_size=20,
+        loop=asyncio.get_running_loop(),
+    )
 
 
 # submitSnapshot
@@ -164,60 +118,12 @@ async def submit_snapshot(request: FastAPIRequest, txn_payload: TxnPayload, prot
     """
     Submit Snapshot
     """
-    async with request.app.state._rwlock.writer_lock:
-        _nonce = request.app.state.signer_nonce
-        try:
-            tx_hash = await write_transaction(
-                request.app.state.w3,
-                request.app.state.signer_account,
-                request.app.state.signer_pkey,
-                protocol_state_contract,
-                'submitSnapshot',
-                _nonce,
-                txn_payload.slotId,
-                txn_payload.snapshotCid,
-                txn_payload.epochId,
-                txn_payload.projectId,
-                (
-                    txn_payload.request.slotId, txn_payload.request.deadline,
-                    txn_payload.request.snapshotCid, txn_payload.request.epochId,
-                    txn_payload.request.projectId,
-                ),
-                txn_payload.signature,
-            )
-
-            request.app.state.signer_nonce += 1
-
-            service_logger.info(
-                f'submitted transaction with tx_hash: {tx_hash}',
-            )
-
-        except Exception as e:
-            service_logger.error(f'Exception: {e}')
-
-            if 'nonce' in str(e):
-                # sleep for 10 seconds and reset nonce
-                time.sleep(10)
-                request.app.state.signer_nonce = await request.app.state.w3.eth.get_transaction_count(
-                    request.app.state.signer_account,
-                )
-                service_logger.info(
-                    f'nonce reset to: {request.app.state.signer_nonce}',
-                )
-                raise Exception('nonce error, reset nonce')
-            else:
-                raise Exception('other error, still retrying')
-
-    receipt = await request.app.state.w3.eth.wait_for_transaction_receipt(tx_hash)
-
-    if receipt['status'] == 0:
-        service_logger.info(
-            f'tx_hash: {tx_hash} failed, receipt: {receipt}, project_id: {txn_payload.projectId}, epoch_id: {txn_payload.epochId}',
-        )
-        # retry
-    else:
-        service_logger.info(
-            f'tx_hash: {tx_hash} succeeded!, project_id: {txn_payload.projectId}, epoch_id: {txn_payload.epochId}',
+    async with request.app.state.rmq_channel_pool.acquire() as channel:
+        exchange = await channel.get_exchange(name=get_core_exchange_name())
+        queue_name, routing_key = get_tx_send_q_routing_key()
+        await exchange.publish(
+            routing_key=routing_key,
+            message=Message(txn_payload.json().encode('utf-8')),
         )
 
 
@@ -306,6 +212,7 @@ async def submit(
     if not await _check(request, req_parsed):
         return JSONResponse(status_code=200, content={'message': 'Snapshot received but not submitted to chain because _check failed!'})
 
+    # TODO: remove protocol state contract call
     try:
         protocol_state_contract = await get_protocol_state_contract(request, req_parsed.contractAddress)
         gas_estimate = await protocol_state_contract.functions.submitSnapshot(
