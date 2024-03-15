@@ -1,6 +1,5 @@
 // this means if app restart {MAX_RESTART} times in 1 min then it stops
 
-const { readFileSync } = require('fs');
 
 const NODE_ENV = process.env.NODE_ENV || 'development';
 
@@ -19,6 +18,15 @@ module.exports = {
       env: {
         NODE_ENV: NODE_ENV,
       },
-    }
+    },
+    {
+      name   : "tx_launcher_core",
+      script: `poetry run python -m tx_launcher_core`,
+      max_restarts: MAX_RESTART,
+      min_uptime: MIN_UPTIME,
+      env: {
+        NODE_ENV: NODE_ENV,
+      },
+    },
   ]
 }
