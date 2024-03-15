@@ -35,9 +35,6 @@ from utils.helpers import get_rabbitmq_channel
 from utils.helpers import get_rabbitmq_robust_connection_async
 from utils.redis_conn import RedisPool
 
-# day buffer due to chain migration or other issues
-DAY_BUFFER = 23
-
 
 class Request(EIP712Struct):
     slotId = Uint()
@@ -188,40 +185,6 @@ async def _get_signer_address(request: FastAPIRequest, txn_payload: TxnPayload):
         message_hash, signature=signature,
     )
     return signer_address
-
-
-async def _check(request: FastAPIRequest, txn_payload: TxnPayload):
-    # get timeslot preference
-    timeslot_pref = await request.app.state.reader_redis_pool.get(timeslot_preference(txn_payload.slotId))
-    if timeslot_pref:
-        timeslot_pref = int(timeslot_pref.decode('utf-8'))
-    else:
-        timeslot_pref = await request.app.state.protocol_state_contract.functions.getSnapshotterTimeSlot(
-            txn_payload.slotId,
-        ).call()
-        if timeslot_pref:
-            await request.app.state.writer_redis_pool.set(
-                timeslot_preference(txn_payload.slotId), timeslot_pref,
-            )
-    if not timeslot_pref:
-        return False
-    if (txn_payload.epochId % request.app.state.epochs_in_a_day) // (request.app.state.epochs_in_a_day // request.app.state.slots_per_day) != timeslot_pref - 1:
-        return False
-
-    current_epoch = txn_payload.epochId
-    snapshotter_address = await _get_signer_address(request, txn_payload)
-    snapshotter_hash = hash(int(snapshotter_address.lower(), 16))
-
-    current_day = (current_epoch // 720) + DAY_BUFFER
-
-    pair_idx = (
-        current_epoch + snapshotter_hash + txn_payload.slotId +
-        current_day
-    ) % len(request.app.state.pairs)
-    # projectId check
-    if request.app.state.pairs[pair_idx].lower() not in txn_payload.projectId.lower():
-        return False
-    return True
 
 
 @app.post('/submitSnapshot')
