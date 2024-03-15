@@ -40,7 +40,6 @@ class GenericAsyncWorker(multiprocessing.Process):
     _signer_pkey: str
     _abi: Dict[str, Any]
     _protocol_state_contract: Any
-    _pairs: List[str]
 
     def __init__(self, name, worker_idx, **kwargs):
         """
@@ -137,8 +136,6 @@ class GenericAsyncWorker(multiprocessing.Process):
         pass
 
     async def _init_protocol_meta(self):
-        with open('utils/static/pairs.json', 'r') as f:
-            self._pairs = json.load(f)
 
         with open('utils/static/abi.json', 'r') as f:
             self._abi = json.load(f)
