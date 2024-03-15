@@ -115,10 +115,6 @@ async def startup_boilerplate():
     with open('utils/static/abi.json', 'r') as f:
         app.state.abi = json.load(f)
 
-    # load pairs
-    with open('utils/static/pairs.json', 'r') as f:
-        app.state.pairs = json.load(f)
-
     app.state.w3 = AsyncWeb3(
         AsyncHTTPProvider(
             settings.anchor_chain.rpc.full_nodes[0].url,
@@ -128,7 +124,6 @@ async def startup_boilerplate():
         address=settings.protocol_state_address, abi=app.state.abi,
     )
 
-    app.state.slots_per_day = await app.state.protocol_state_contract.functions.SLOTS_PER_DAY().call()
     app.state.epoch_size = await app.state.protocol_state_contract.functions.EPOCH_SIZE().call()
     app.state.source_chain_block_time = (await app.state.protocol_state_contract.functions.SOURCE_CHAIN_BLOCK_TIME().call()) / 1e4
     app.state.epochs_in_a_day = 86400 // (
