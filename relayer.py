@@ -159,29 +159,6 @@ async def submit_snapshot(request: FastAPIRequest, txn_payload: TxnPayload):
         )
 
 
-async def get_protocol_state_contract(request: FastAPIRequest, contract_address: str):
-    """
-    Get Protocol State Contract
-    """
-    # validate contract address
-    if not request.app.state.w3.is_address(contract_address):
-        return None
-
-    # get contract object
-    if request.app.state.w3.to_checksum_address(contract_address) not in request.app.state.protocol_state_contract_instance_mapping:
-        contract = request.app.state.w3.eth.contract(
-            address=contract_address, abi=app.state.abi,
-        )
-        request.app.state.protocol_state_contract_instance_mapping[
-            request.app.state.w3.to_checksum_address(contract_address)
-        ] = contract
-        return contract
-    else:
-        return request.app.state.protocol_state_contract_instance_mapping[
-            request.app.state.w3.to_checksum_address(contract_address)
-        ]
-
-
 async def _get_signer_address(request: FastAPIRequest, txn_payload: TxnPayload):
     """
     Get Signer Address

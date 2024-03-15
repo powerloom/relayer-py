@@ -61,6 +61,7 @@ class GenericAsyncWorker(multiprocessing.Process):
         self.protocol_state_contract_address = settings.protocol_state_address
         self._worker_idx = worker_idx
         self._initialized = False
+        self.protocol_state_contract_instance_mapping = {}
 
     def _signal_handler(self, signum, frame):
         """
@@ -72,6 +73,28 @@ class GenericAsyncWorker(multiprocessing.Process):
         """
         if signum in [SIGINT, SIGTERM, SIGQUIT]:
             self._core_rmq_consumer.cancel()
+
+    async def get_protocol_state_contract(self, contract_address: str):
+        """
+        Get Protocol State Contract
+        """
+        # validate contract address
+        if not self._w3.is_address(contract_address):
+            return None
+
+        # get contract object
+        if self._w3.to_checksum_address(contract_address) not in self.protocol_state_contract_instance_mapping:
+            contract = self._w3.eth.contract(
+                address=contract_address, abi=self._abi,
+            )
+            self.protocol_state_contract_instance_mapping[
+                self._w3.to_checksum_address(contract_address)
+            ] = contract
+            return contract
+        else:
+            return self.protocol_state_contract_instance_mapping[
+                self._w3.to_checksum_address(contract_address)
+            ]
 
     async def _rabbitmq_consumer(self, loop):
         """
