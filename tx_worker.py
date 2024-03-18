@@ -23,10 +23,10 @@ def keccak_hash(x):
 
 
 def teancity_retry_callback(retry_state: tenacity.RetryCallState):
-    if retry_state.attempt_number == 3:
+    if retry_state.attempt_number >= 3:
         # TODO: figure out how to access the retried functions state since retry_state.args returns the self object in a single tuple
         # logger.error('Txn signing worker for payload {retry_state.args[1]} failed after 3 attempts')
-        logger.error('Txn signing worker for payload {retry_state.args[1]} failed after 3 attempts')
+        logger.error('Txn signing worker failed after 3 attempts')
     else:
         logger.warning('Tx signing worker attempt number {retry_state.attempt_number} result {retry_state.outcome}')
 
