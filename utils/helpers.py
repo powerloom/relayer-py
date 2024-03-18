@@ -64,6 +64,10 @@ def aiorwlock_aqcuire_release(fn):
         await self._rwlock.writer_lock.acquire()
         try:
             tx_hash = await fn(self, *args, **kwargs)
+            try:
+                self._rwlock.writer_lock.release()
+            except Exception as e:
+                logger.error(f'Error releasing rwlock: {e}. But moving on regardless...')
         except Exception as e:
             # this is ultimately reraised by tenacity once the retries are exhausted
             # nothing to do here
@@ -84,11 +88,6 @@ def aiorwlock_aqcuire_release(fn):
                 except:
                     pass
 
-        finally:
-            try:
-                self._rwlock.writer_lock.release()
-            except Exception as e:
-                logger.error(f'Error releasing rwlock: {e}. But moving on regardless...')
     return wrapper
 
 async def get_rabbitmq_robust_connection_async():
