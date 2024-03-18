@@ -48,7 +48,7 @@ def cleanup_proc_hub_children(fn):
             # sys.exit(0)
     return wrapper
 
-async def aiorwlock_aqcuire_release(fn):
+def aiorwlock_aqcuire_release(fn):
     """
     A decorator that wraps a function and handles cleanup of any child processes
     spawned by the function in case of an exception.
