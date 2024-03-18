@@ -63,7 +63,7 @@ async def aiorwlock_aqcuire_release(fn):
     async def wrapper(self, *args, **kwargs):
         await self._rwlock.writer_lock.acquire()
         try:
-            return await fn(self, *args, **kwargs)
+            await fn(self, *args, **kwargs)
         except Exception as e:
             # this is ultimately reraised by tenacity once the retries are exhausted
             # nothing to do here
