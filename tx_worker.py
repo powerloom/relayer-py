@@ -108,22 +108,9 @@ class TxWorker(GenericAsyncWorker):
                 raise Exception('nonce error, reset nonce')
             else:
                 raise Exception('other error, still retrying')
-
-        try:
-            receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash)
-
-            if receipt['status'] == 0:
-                self._logger.info(
-                    f'tx_hash: {tx_hash} failed to gather success receipt after 120 seconds, receipt: {receipt}, payload: {txn_payload}',
-                )
-                # retry
-            else:
-                self._logger.info(
-                    f'tx_hash: {tx_hash} succeeded!, project_id: {txn_payload.projectId}, epoch_id: {txn_payload.epochId}',
-                )
-        except:
-            pass
-
+        else:
+            return tx_hash
+        
     async def _on_rabbitmq_message(self, message: IncomingMessage):
         """
         Callback function that is called when a message is received from RabbitMQ.

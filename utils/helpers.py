@@ -63,11 +63,27 @@ def aiorwlock_aqcuire_release(fn):
     async def wrapper(self, *args, **kwargs):
         await self._rwlock.writer_lock.acquire()
         try:
-            await fn(self, *args, **kwargs)
+            tx_hash = await fn(self, *args, **kwargs)
         except Exception as e:
             # this is ultimately reraised by tenacity once the retries are exhausted
             # nothing to do here
             pass
+        else:
+            if tx_hash is not None:
+                try:
+                    receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash)
+
+                    if receipt['status'] == 0:
+                        self._logger.info(
+                            f'tx_hash: {tx_hash} failed to gather success receipt after 120 seconds, receipt: {receipt}' # , payload: {txn_payload}',
+                        )
+                    else:
+                        self._logger.info(
+                            f'tx_hash: {tx_hash} succeeded!,'  # project_id: {txn_payload.projectId}, epoch_id: {txn_payload.epochId}',
+                        )
+                except:
+                    pass
+
         finally:
             try:
                 self._rwlock.writer_lock.release()
