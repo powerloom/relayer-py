@@ -48,6 +48,32 @@ def cleanup_proc_hub_children(fn):
             # sys.exit(0)
     return wrapper
 
+async def aiorwlock_aqcuire_release(fn):
+    """
+    A decorator that wraps a function and handles cleanup of any child processes
+    spawned by the function in case of an exception.
+
+    Args:
+        fn (function): The function to be wrapped.
+
+    Returns:
+        function: The wrapped function.
+    """
+    @wraps(fn)
+    async def wrapper(self, *args, **kwargs):
+        await self._rwlock.writer_lock.acquire()
+        try:
+            return await fn(self, *args, **kwargs)
+        except Exception as e:
+            # this is ultimately reraised by tenacity once the retries are exhausted
+            # nothing to do here
+            pass
+        finally:
+            try:
+                self._rwlock.writer_lock.release()
+            except Exception as e:
+                logger.error(f'Error releasing rwlock: {e}. But moving on regardless...')
+    return wrapper
 
 async def get_rabbitmq_robust_connection_async():
     """
