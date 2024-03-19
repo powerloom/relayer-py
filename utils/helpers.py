@@ -48,6 +48,47 @@ def cleanup_proc_hub_children(fn):
             # sys.exit(0)
     return wrapper
 
+def aiorwlock_aqcuire_release(fn):
+    """
+    A decorator that wraps a function and handles cleanup of any child processes
+    spawned by the function in case of an exception.
+
+    Args:
+        fn (function): The function to be wrapped.
+
+    Returns:
+        function: The wrapped function.
+    """
+    @wraps(fn)
+    async def wrapper(self, *args, **kwargs):
+        await self._rwlock.writer_lock.acquire()
+        try:
+            tx_hash = await fn(self, *args, **kwargs)
+            try:
+                self._rwlock.writer_lock.release()
+            except Exception as e:
+                logger.error(f'Error releasing rwlock: {e}. But moving on regardless...')
+        except Exception as e:
+            # this is ultimately reraised by tenacity once the retries are exhausted
+            # nothing to do here
+            pass
+        else:
+            if tx_hash is not None:
+                try:
+                    receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash)
+
+                    if receipt['status'] == 0:
+                        self._logger.info(
+                            f'tx_hash: {tx_hash} failed to gather success receipt after 120 seconds, receipt: {receipt}' # , payload: {txn_payload}',
+                        )
+                    else:
+                        self._logger.info(
+                            f'tx_hash: {tx_hash} succeeded!,'  # project_id: {txn_payload.projectId}, epoch_id: {txn_payload.epochId}',
+                        )
+                except:
+                    pass
+
+    return wrapper
 
 async def get_rabbitmq_robust_connection_async():
     """
