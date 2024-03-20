@@ -7,21 +7,7 @@ from relayer import app
 from settings.conf import settings
 
 
-# reset pid.json
-with open('pid.json', 'w') as pid_file:
-    json.dump([], pid_file)
-
-
 def post_worker_init(worker):
-    # add worker pid to a list and store that file
-
-    with open('pid.json', 'r') as pid_file:
-        data = json.load(pid_file)
-        data.append(worker.pid)
-
-    with open('pid.json', 'w') as pid_file:
-        json.dump(data, pid_file)
-
     # print(worker.app.application.state.worker_id)
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     resource.setrlimit(

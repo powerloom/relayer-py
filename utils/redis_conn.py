@@ -61,6 +61,34 @@ def get_redis_conn_from_pool(connection_pool: redis.BlockingConnectionPool) -> r
     except KeyboardInterrupt:
         pass
 
+def provide_redis_conn_repsawning_thread(fn):
+    @wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        arg_conn = 'redis_conn'
+        func_params = fn.__code__.co_varnames
+        conn_in_args = arg_conn in func_params and func_params.index(
+            arg_conn,
+        ) < len(args)
+        conn_in_kwargs = arg_conn in kwargs
+        if conn_in_args or conn_in_kwargs:
+            return fn(*args, **kwargs)
+        else:
+            connection_pool = redis.BlockingConnectionPool(**REDIS_CONN_CONF)
+            while True:
+                try:
+                    with get_redis_conn_from_pool(connection_pool) as redis_obj:
+                        kwargs[arg_conn] = redis_obj
+                        logger.debug(
+                            'Returning after populating redis connection object',
+                        )
+                        _ = fn(self, *args, **kwargs)
+                except Exception as e:
+                    continue
+                # if no exception was caught and the thread returns normally, it is the sign of a shutdown event being set
+                else:
+                    return _
+
+    return wrapper
 
 def provide_redis_conn(fn):
     @wraps(fn)

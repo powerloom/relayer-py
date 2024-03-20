@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Union
 from typing import Optional
 
 from pydantic import BaseModel
@@ -68,8 +68,19 @@ class Signer(BaseModel):
     private_key: str
 
 
+class RabbitMQConfig(BaseModel):
+    exchange: str
+
+
+class RabbitMQ(BaseModel):
+    user: str
+    password: str
+    host: str
+    port: int
+
 class SettingsConf(BaseModel):
     relayer_service: RelayerService
+    rabbitmq: RabbitMQ
     redis: RedisConfig
     rate_limit: str
     anchor_chain: AnchorChainConfig
@@ -78,6 +89,11 @@ class SettingsConf(BaseModel):
     protocol_state_address: str
     signers: List[Signer]
     min_signer_balance_eth: int
+
+
+class ProcessorWorkerDetails(BaseModel):
+    unique_name: str
+    pid: Union[None, int] = None
 
 
 class GenericTxnIssue(BaseModel):
@@ -90,6 +106,7 @@ class GenericTxnIssue(BaseModel):
 
 
 class SignRequest(BaseModel):
+    slotId: int
     deadline: int
     snapshotCid: str
     epochId: int
@@ -97,9 +114,16 @@ class SignRequest(BaseModel):
 
 
 class TxnPayload(BaseModel):
+    slotId: int
     projectId: str
     snapshotCid: str
     epochId: int
     request: SignRequest
     signature: str
     contractAddress: str
+
+
+class WalletRegistrationRequest(BaseModel):
+    walletAddress: str
+    allowed: bool
+    token: str
