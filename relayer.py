@@ -36,7 +36,7 @@ from utils.helpers import get_rabbitmq_robust_connection_async
 from utils.redis_conn import RedisPool
 
 # day buffer due to chain migration or other issues
-DAY_BUFFER = 23
+DAY_BUFFER = 36
 
 
 class Request(EIP712Struct):

@@ -1,6 +1,7 @@
 import asyncio
-import tenacity
+
 import sha3
+import tenacity
 from aio_pika import IncomingMessage
 from eip712_structs import EIP712Struct
 from eip712_structs import String
@@ -10,6 +11,7 @@ from tenacity import retry
 from tenacity import retry_if_exception_type
 from tenacity import stop_after_attempt
 from tenacity import wait_random_exponential
+
 from data_models import TxnPayload
 from init_rabbitmq import get_tx_send_q_routing_key
 from utils.default_logger import logger
@@ -28,7 +30,10 @@ def teancity_retry_callback(retry_state: tenacity.RetryCallState):
         # logger.error('Txn signing worker for payload {retry_state.args[1]} failed after 3 attempts')
         logger.error('Txn signing worker failed after 3 attempts')
     else:
-        logger.warning('Tx signing worker attempt number {retry_state.attempt_number} result {retry_state.outcome}')
+        logger.warning(
+            'Tx signing worker attempt number {retry_state.attempt_number} result {retry_state.outcome}',
+        )
+
 
 class Request(EIP712Struct):
     slotId = Uint()
@@ -67,6 +72,7 @@ class TxWorker(GenericAsyncWorker):
         """
         # ideally this should not be necessary given that async code can not be parallel
         _nonce = self._signer_nonce
+        self._logger.trace(f'nonce: {_nonce}')
         try:
             tx_hash = await write_transaction(
                 self._w3,
@@ -110,7 +116,7 @@ class TxWorker(GenericAsyncWorker):
                 raise Exception('other error, still retrying')
         else:
             return tx_hash
-        
+
     async def _on_rabbitmq_message(self, message: IncomingMessage):
         """
         Callback function that is called when a message is received from RabbitMQ.

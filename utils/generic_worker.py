@@ -164,7 +164,7 @@ class GenericAsyncWorker(multiprocessing.Process):
                 f'Signer {self._signer_account} has insufficient balance: {balance} ETH',
             )
             exit(1)
-        self._rwlock = aiorwlock.RWLock()
+        self._rwlock = aiorwlock.RWLock(fast=True)
         logger.info(
             f'Started worker {self._worker_idx}, with signer_account: {self._signer_account}, signer_nonce: {self._signer_nonce}',
         )

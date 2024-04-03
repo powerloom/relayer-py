@@ -7,7 +7,7 @@
 	},
 	"rate_limit": "100000/day;200/minute;20/second",
 	"redis": {
-		"host": "host.docker.internal",
+		"host": "redis",
 		"port": 6379,
 		"db": 0,
 		"password": null
@@ -40,7 +40,7 @@
 		"polling_interval":2
 	},
 	"rlimit": {
-		"file_descriptors": 2048
+		"file_descriptors": 40960
 	},
 	"protocol_state_address": "0xb24553C414e8FD41fB0F19F04B53bbb22ea5EDCf",
     "signers": [

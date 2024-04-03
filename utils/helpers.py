@@ -1,4 +1,3 @@
-import os
 import sys
 from functools import wraps
 
@@ -48,6 +47,7 @@ def cleanup_proc_hub_children(fn):
             # sys.exit(0)
     return wrapper
 
+
 def aiorwlock_aqcuire_release(fn):
     """
     A decorator that wraps a function and handles cleanup of any child processes
@@ -61,34 +61,41 @@ def aiorwlock_aqcuire_release(fn):
     """
     @wraps(fn)
     async def wrapper(self, *args, **kwargs):
+        logger.trace('Acquiring writer lock')
         await self._rwlock.writer_lock.acquire()
+        logger.trace('Acquired writer lock')
         try:
             tx_hash = await fn(self, *args, **kwargs)
+
+        except Exception as e:
+            logger.error(f'Exception: {e}')
+        else:
             try:
+                logger.trace('Releasing writer lock')
                 self._rwlock.writer_lock.release()
             except Exception as e:
-                logger.error(f'Error releasing rwlock: {e}. But moving on regardless...')
-        except Exception as e:
-            # this is ultimately reraised by tenacity once the retries are exhausted
-            # nothing to do here
-            pass
-        else:
+                logger.error(
+                    f'Error releasing rwlock: {e}. But moving on regardless...',
+                )
+
             if tx_hash is not None:
                 try:
                     receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash)
 
                     if receipt['status'] == 0:
                         self._logger.info(
-                            f'tx_hash: {tx_hash} failed to gather success receipt after 120 seconds, receipt: {receipt}' # , payload: {txn_payload}',
+                            f'tx_hash: {tx_hash} failed!, receipt: {receipt}',
                         )
                     else:
                         self._logger.info(
-                            f'tx_hash: {tx_hash} succeeded!,'  # project_id: {txn_payload.projectId}, epoch_id: {txn_payload.epochId}',
+                            f'tx_hash: {tx_hash} succeeded!,',
                         )
-                except:
-                    pass
-
+                except Exception as e:
+                    self._logger.error(
+                        f'Error waiting for tx_hash: {tx_hash}, error: {e}',
+                    )
     return wrapper
+
 
 async def get_rabbitmq_robust_connection_async():
     """
@@ -118,7 +125,7 @@ async def get_rabbitmq_basic_connection_async():
     )
 
 
-async def get_rabbitmq_channel(connection_pool) -> aio_pika.Channel:
+async def get_rabbitmq_channel(connection_pool: Pool) -> aio_pika.Channel:
     """
     Acquires a connection from the connection pool and returns a channel object for RabbitMQ communication.
 
