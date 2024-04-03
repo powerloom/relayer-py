@@ -238,8 +238,10 @@ async def submit(
         return JSONResponse(status_code=200, content={'message': 'Snapshot received but not submitted to chain because _check failed!'})
 
     try:
-        await submit_snapshot(
-            request, req_parsed,
+        asyncio.ensure_future(
+            submit_snapshot(
+                request, req_parsed,
+            ),
         )
 
         return JSONResponse(status_code=200, content={'message': 'Submitted Snapshot to relayer!'})

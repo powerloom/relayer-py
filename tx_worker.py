@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import sha3
 import tenacity
@@ -104,7 +105,7 @@ class TxWorker(GenericAsyncWorker):
 
             if 'nonce' in str(e):
                 # sleep for 10 seconds and reset nonce
-                await asyncio.sleep(10)
+                time.sleep(10)
                 self._signer_nonce = await self._w3.eth.get_transaction_count(
                     self._signer_account,
                 )
