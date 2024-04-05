@@ -73,13 +73,14 @@ class TxWorker(GenericAsyncWorker):
         """
         # ideally this should not be necessary given that async code can not be parallel
         _nonce = self._signer_nonce
+        protocol_state_contract = await self.get_protocol_state_contract(txn_payload.contractAddress)
         self._logger.trace(f'nonce: {_nonce}')
         try:
             tx_hash = await write_transaction(
                 self._w3,
                 self._signer_account,
                 self._signer_pkey,
-                self._protocol_state_contract,
+                protocol_state_contract,
                 'submitSnapshot',
                 _nonce,
                 txn_payload.slotId,
