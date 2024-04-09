@@ -277,6 +277,7 @@ class GenericAsyncWorker(multiprocessing.Process):
         """
         if not self._initialized:
             await self._init_protocol_meta()
+            await self._init_redis_pool()
         self._initialized = True
 
     def run(self) -> None:
