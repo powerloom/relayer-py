@@ -98,7 +98,7 @@ class TxWorker(GenericAsyncWorker):
             self._signer_nonce += 1
 
             self._logger.info(
-                f'submitted transaction with tx_hash: {tx_hash}',
+                f'submitted transaction with tx_hash: {tx_hash}, payload {txn_payload}',
             )
 
         except Exception as e:
@@ -151,4 +151,14 @@ class TxWorker(GenericAsyncWorker):
             )
             return
         else:
-            asyncio.ensure_future(self.submit_snapshot(txn_payload=msg_obj))
+            if self._check(msg_obj):
+                self._logger.info(
+                    f'Processing message: {msg_obj}',
+                )
+                asyncio.ensure_future(
+                    self.submit_snapshot(txn_payload=msg_obj),
+                )
+            else:
+                self._logger.error(
+                    f'Snapshot received but not submitted to chain because _check failed! {msg_obj}',
+                )

@@ -84,11 +84,11 @@ def aiorwlock_aqcuire_release(fn):
 
                     if receipt['status'] == 0:
                         self._logger.info(
-                            f'tx_hash: {tx_hash} failed!, receipt: {receipt}',
+                            f'tx_hash: {tx_hash} failed!, receipt: {receipt}, payload: {args}',
                         )
                     else:
                         self._logger.info(
-                            f'tx_hash: {tx_hash} succeeded!,',
+                            f'tx_hash: {tx_hash} succeeded!, payload: {args}',
                         )
                 except Exception as e:
                     self._logger.error(
