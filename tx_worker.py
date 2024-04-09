@@ -151,7 +151,7 @@ class TxWorker(GenericAsyncWorker):
             )
             return
         else:
-            if self._check(msg_obj):
+            if await self._check(msg_obj):
                 self._logger.info(
                     f'Processing message: {msg_obj}',
                 )
