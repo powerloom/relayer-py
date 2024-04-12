@@ -13,9 +13,14 @@ from typing import List
 from uuid import uuid4
 
 import aiorwlock
+import sha3
 import uvloop
 from aio_pika import IncomingMessage
 from aio_pika.pool import Pool
+from eip712_structs import EIP712Struct
+from eip712_structs import make_domain
+from eip712_structs import String
+from eip712_structs import Uint
 from eth_typing import ChecksumAddress
 from eth_utils.crypto import keccak
 from httpx import AsyncHTTPTransport
@@ -23,11 +28,29 @@ from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
 from web3 import Web3
 
+from data_models import TxnPayload
+from helpers.redis_keys import timeslot_preference
 from init_rabbitmq import get_core_exchange_name
 from settings.conf import settings
 from utils.default_logger import logger
 from utils.helpers import get_rabbitmq_channel
 from utils.helpers import get_rabbitmq_robust_connection_async
+from utils.redis_conn import RedisPool
+
+# day buffer due to chain migration or other issues
+DAY_BUFFER = 36
+
+
+class Request(EIP712Struct):
+    slotId = Uint()
+    deadline = Uint()
+    snapshotCid = String()
+    epochId = Uint()
+    projectId = String()
+
+
+def keccak_hash(x):
+    return sha3.keccak_256(x).digest()
 
 
 class GenericAsyncWorker(multiprocessing.Process):
@@ -96,6 +119,69 @@ class GenericAsyncWorker(multiprocessing.Process):
                 self._w3.to_checksum_address(contract_address)
             ]
 
+    async def _get_signer_address(self, txn_payload: TxnPayload):
+        """
+        Get Signer Address
+        """
+
+        request_ = txn_payload.request.dict()
+        signature = bytes.fromhex(txn_payload.signature[2:])
+        signature_request = Request(
+            slotId=request_['slotId'],
+            deadline=request_['deadline'],
+            snapshotCid=request_['snapshotCid'],
+            epochId=request_['epochId'],
+            projectId=request_['projectId'],
+        )
+
+        domain_separator = make_domain(
+            name='PowerloomProtocolContract',
+            version='0.1', chainId=settings.anchor_chain.chain_id,
+            verifyingContract=self._w3.to_checksum_address(
+                txn_payload.contractAddress,
+            ),
+        )
+
+        signable_bytes = signature_request.signable_bytes(domain_separator)
+        message_hash = keccak_hash(signable_bytes)
+        signer_address = self._w3.eth.account._recover_hash(
+            message_hash, signature=signature,
+        )
+        return signer_address
+
+    async def _check(self, txn_payload: TxnPayload):
+        # get timeslot preference
+        timeslot_pref = await self.reader_redis_pool.get(timeslot_preference(txn_payload.slotId))
+        if timeslot_pref:
+            timeslot_pref = int(timeslot_pref.decode('utf-8'))
+        else:
+            timeslot_pref = await self._protocol_state_contract.functions.getSnapshotterTimeSlot(
+                txn_payload.slotId,
+            ).call()
+            if timeslot_pref:
+                await self.writer_redis_pool.set(
+                    timeslot_preference(txn_payload.slotId), timeslot_pref,
+                )
+        if not timeslot_pref:
+            return False
+        if (txn_payload.epochId % self.epochs_in_a_day) // (self.epochs_in_a_day // self.slots_per_day) != timeslot_pref - 1:
+            return False
+
+        current_epoch = txn_payload.epochId
+        snapshotter_address = await self._get_signer_address(txn_payload)
+        snapshotter_hash = hash(int(snapshotter_address.lower(), 16))
+
+        current_day = (current_epoch // 720) + DAY_BUFFER
+
+        pair_idx = (
+            current_epoch + snapshotter_hash + txn_payload.slotId +
+            current_day
+        ) % len(self._pairs)
+        # projectId check
+        if self._pairs[pair_idx].lower() not in txn_payload.projectId.lower():
+            return False
+        return True
+
     async def _rabbitmq_consumer(self, loop):
         """
         Consume messages from a RabbitMQ queue.
@@ -136,6 +222,15 @@ class GenericAsyncWorker(multiprocessing.Process):
         """
         pass
 
+    async def _init_redis_pool(self):
+        """
+        Initializes the Redis pool for the worker.
+        """
+        self.aioredis_pool = RedisPool(writer_redis_conf=settings.redis)
+        await self.aioredis_pool.populate()
+        self.reader_redis_pool = self.aioredis_pool.reader_redis_pool
+        self.writer_redis_pool = self.aioredis_pool.writer_redis_pool
+
     async def _init_protocol_meta(self):
         with open('utils/static/pairs.json', 'r') as f:
             self._pairs = json.load(f)
@@ -156,6 +251,13 @@ class GenericAsyncWorker(multiprocessing.Process):
         self._protocol_state_contract = self._w3.eth.contract(
             address=Web3.to_checksum_address(settings.protocol_state_address), abi=self._abi,
         )
+        self.slots_per_day = await self._protocol_state_contract.functions.SLOTS_PER_DAY().call()
+        self.epoch_size = await self._protocol_state_contract.functions.EPOCH_SIZE().call()
+        self.source_chain_block_time = (await self._protocol_state_contract.functions.SOURCE_CHAIN_BLOCK_TIME().call()) / 1e4
+        self.epochs_in_a_day = 86400 // (
+            self.epoch_size * self.source_chain_block_time
+        )
+
         balance = await self._w3.eth.get_balance(self._signer_account)
         # convert to eth
         balance = self._w3.from_wei(balance, 'ether')
@@ -175,6 +277,7 @@ class GenericAsyncWorker(multiprocessing.Process):
         """
         if not self._initialized:
             await self._init_protocol_meta()
+            await self._init_redis_pool()
         self._initialized = True
 
     def run(self) -> None:
