@@ -149,8 +149,10 @@ class GenericAsyncWorker(multiprocessing.Process):
         )
         return signer_address
 
-    async def _check(self, txn_payload: TxnPayload):
-        # get timeslot preference
+    async def _timeslot_check(self, txn_payload: TxnPayload):
+        """
+        Timeslot Check
+        """
         timeslot_pref = await self.reader_redis_pool.get(timeslot_preference(txn_payload.slotId))
         if timeslot_pref:
             timeslot_pref = int(timeslot_pref.decode('utf-8'))
@@ -166,13 +168,19 @@ class GenericAsyncWorker(multiprocessing.Process):
             return False
         if (txn_payload.epochId % self.epochs_in_a_day) // (self.epochs_in_a_day // self.slots_per_day) != timeslot_pref - 1:
             return False
+        return True
 
+    async def _data_check(self, txn_payload: TxnPayload):
+        """
+        Data Check
+        """
         current_epoch = txn_payload.epochId
         snapshotter_address = await self._get_signer_address(txn_payload)
         snapshotter_hash = hash(int(snapshotter_address.lower(), 16))
 
         current_day = (current_epoch // 720) + DAY_BUFFER
-
+        # TODO: support multiple data markets, for now only one
+        # TODO: Move out to utils
         pair_idx = (
             current_epoch + snapshotter_hash + txn_payload.slotId +
             current_day
@@ -180,6 +188,18 @@ class GenericAsyncWorker(multiprocessing.Process):
         # projectId check
         if self._pairs[pair_idx].lower() not in txn_payload.projectId.lower():
             return False
+        return True
+
+    async def _check(self, txn_payload: TxnPayload):
+        """
+        Check payload before submitting
+        """
+        if settings.time_slot_check and not await self._timeslot_check(txn_payload):
+            return False
+
+        if settings.data_check and not await self._data_check(txn_payload):
+            return False
+
         return True
 
     async def _rabbitmq_consumer(self, loop):

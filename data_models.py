@@ -1,5 +1,6 @@
-from typing import List, Union
+from typing import List
 from typing import Optional
+from typing import Union
 
 from pydantic import BaseModel
 
@@ -78,6 +79,7 @@ class RabbitMQ(BaseModel):
     host: str
     port: int
 
+
 class SettingsConf(BaseModel):
     relayer_service: RelayerService
     rabbitmq: RabbitMQ
@@ -89,6 +91,8 @@ class SettingsConf(BaseModel):
     protocol_state_address: str
     signers: List[Signer]
     min_signer_balance_eth: int
+    time_slot_check: bool
+    data_check: bool
 
 
 class ProcessorWorkerDetails(BaseModel):

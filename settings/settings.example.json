@@ -53,5 +53,7 @@
             "private_key": "0x0000"
         }
     ],
-	"min_signer_balance_eth": 1
+	"min_signer_balance_eth": 1,
+	"time_slot_check": true,
+	"data_check": true
 }
