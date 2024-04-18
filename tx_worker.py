@@ -178,6 +178,6 @@ class TxWorker(GenericAsyncWorker):
                     self.submit_snapshot(txn_payload=msg_obj),
                 )
             else:
-                self._logger.error(
+                self._logger.trace(
                     f'Snapshot received but not submitted to chain because _check failed! {msg_obj}',
                 )
