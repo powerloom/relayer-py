@@ -11,7 +11,6 @@ from tenacity import wait_random_exponential
 from data_models import TxnPayload
 from init_rabbitmq import get_tx_send_q_routing_key
 from utils.generic_worker import GenericAsyncWorker
-from utils.helpers import aiorwlock_aqcuire_release
 from utils.transaction_utils import write_transaction
 
 
@@ -30,7 +29,6 @@ class TxWorker(GenericAsyncWorker):
         )
 
     # submitSnapshot
-    @aiorwlock_aqcuire_release
     @retry(
         reraise=True,
         retry=retry_if_exception_type(Exception),
@@ -41,7 +39,11 @@ class TxWorker(GenericAsyncWorker):
         """
         Submit Snapshot
         """
+        await self._rwlock.writer_lock.acquire()
         _nonce = self._signer_nonce
+        self._signer_nonce += 1
+        self._rwlock.writer_lock.release()
+
         protocol_state_contract = await self.get_protocol_state_contract(txn_payload.contractAddress)
         self._logger.trace(f'nonce: {_nonce}')
         try:
@@ -78,7 +80,9 @@ class TxWorker(GenericAsyncWorker):
                 self._logger.info(
                     'Nonce too low error. Next nonce: {}', next_nonce,
                 )
+                await self._rwlock.writer_lock.acquire()
                 self._signer_nonce = next_nonce
+                self._rwlock.writer_lock.release()
                 # reset queue
                 raise Exception('nonce error, reset nonce')
             else:
@@ -87,9 +91,13 @@ class TxWorker(GenericAsyncWorker):
                 )
                 # sleep for two seconds before updating nonce
                 time.sleep(2)
-                self._signer_nonce = await self._w3.eth.get_transaction_count(
+                correct_nonce = await self._w3.eth.get_transaction_count(
                     self._signer_account,
                 )
+                await self._rwlock.writer_lock.acquire()
+                self._signer_nonce = correct_nonce
+                self._rwlock.writer_lock.release()
+
                 self._logger.info(
                     f'nonce for {self._signer_account} reset to: {self._signer_nonce}',
                 )

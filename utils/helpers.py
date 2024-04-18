@@ -48,54 +48,6 @@ def cleanup_proc_hub_children(fn):
     return wrapper
 
 
-def aiorwlock_aqcuire_release(fn):
-    """
-    A decorator that wraps a function and handles cleanup of any child processes
-    spawned by the function in case of an exception.
-
-    Args:
-        fn (function): The function to be wrapped.
-
-    Returns:
-        function: The wrapped function.
-    """
-    @wraps(fn)
-    async def wrapper(self, *args, **kwargs):
-        self._logger.info(
-            'Using signer {} for submission task. Acquiring lock', self._signer_account,
-        )
-        await self._rwlock.writer_lock.acquire()
-        self._logger.info(
-            'Using signer {} for submission task. Acquired lock', self._signer_account,
-        )
-        # self._logger.debug('Wrapping fn: {}', fn.__name__)
-        try:
-            # including the retry calls
-            await fn(self, *args, **kwargs)
-
-            self._signer_nonce += 1
-            self._logger.info(
-                'Using signer {} for submission task. Incremented nonce {}',
-                self._signer_account, self._signer_nonce,
-            )
-        except Exception as e:
-            # this is ultimately reraised by tenacity once the retries are exhausted
-            # nothing to do here
-            self._logger.opt(exception=True).error(
-                f'Exception: {e}, Nonce: {self._signer_nonce}',
-            )
-
-        finally:
-            try:
-                self._rwlock.writer_lock.release()
-            except Exception as e:
-                logger.trace(
-                    'Error releasing rwlock: {}. But moving on regardless... | Context: '
-                    'Using signer {} for submission task: {}. Acquiring lock', e, self._signer_account, kwargs,
-                )
-    return wrapper
-
-
 async def get_rabbitmq_robust_connection_async():
     """
     Returns a robust connection to RabbitMQ server using the settings specified in the configuration file.
