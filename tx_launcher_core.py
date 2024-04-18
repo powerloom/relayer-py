@@ -19,6 +19,7 @@ import redis
 from data_models import ProcessorWorkerDetails
 from helpers.redis_keys import tx_launcher_core_start_timestamp
 from settings.conf import settings
+from tx_checker import TxChecker
 from tx_worker import TxWorker
 from utils.default_logger import logger
 from utils.helpers import cleanup_proc_hub_children
@@ -272,12 +273,52 @@ class TxWorkerLauncherCore(Process):
                 snapshot_worker_obj.pid,
             )
 
+    def _launch_checking_cb_workers(self):
+        """
+        Launches signing workers based on the configuration specified in the settings.
+        Each worker signs snapshot submissions on behalf of the snapshotter and is launched as a separate process.
+        """
+        self._logger.debug('=' * 80)
+        self._logger.debug('Launching Snapshot Checking Workers')
+
+        # Starting Snapshot workers
+        self._spawned_cb_processes_map['checking_workers'] = dict()
+
+        for _ in range(len(settings.signers)):
+            unique_id = str(uuid.uuid4())[:5]
+            unique_name = (
+                f'TxCheckerWorker:{settings.protocol_state_address.lower()[:5]}' +
+                '-' +
+                unique_id
+            )
+            snapshot_worker_obj: Process = TxChecker(
+                name=unique_name,
+            )
+            snapshot_worker_obj.start()
+            self._spawned_cb_processes_map['checking_workers'].update(
+                {
+                    unique_id: ProcessorWorkerDetails(
+                        unique_name=unique_name, pid=snapshot_worker_obj.pid,
+                    ),
+                },
+            )
+            self._logger.debug(
+                (
+                    'Tx Worker Core launched process {} for'
+                    ' worker type {} with PID: {}'
+                ),
+                unique_name,
+                'signing_workers',
+                snapshot_worker_obj.pid,
+            )
+
     def _launch_all_children(self):
         """
         Launches all the child processes for the process hub core.
         """
         self._logger.debug('=' * 80)
         self._launch_signing_cb_workers()
+        self._launch_checking_cb_workers()
 
     def _set_start_time(self):
         self._redis_conn_sync.set(
@@ -311,7 +352,8 @@ class TxWorkerLauncherCore(Process):
             connection_pool=self._redis_connection_pool_sync,
         )
 
-        self._launch_signing_cb_workers()
+        self._launch_all_children()
+
         self._logger.debug(
             'Starting Internal Process State reporter for Signer Hub Core...',
         )

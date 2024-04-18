@@ -7,35 +7,42 @@ from signal import SIGINT
 from signal import signal
 from signal import SIGQUIT
 from signal import SIGTERM
-from typing import Any
-from typing import Dict
-from typing import List
 from uuid import uuid4
 
-import aiorwlock
 import sha3
 import uvloop
 from aio_pika import IncomingMessage
+from aio_pika import Message
 from aio_pika.pool import Pool
 from eip712_structs import EIP712Struct
+from eip712_structs import make_domain
 from eip712_structs import String
 from eip712_structs import Uint
-from eth_typing import ChecksumAddress
 from eth_utils.crypto import keccak
-from httpx import AsyncHTTPTransport
+from pydantic import ValidationError
 from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
 from web3 import Web3
 
+from data_models import TxnPayload
+from helpers.redis_keys import timeslot_preference
 from init_rabbitmq import get_core_exchange_name
+from init_rabbitmq import get_tx_check_q_routing_key
+from init_rabbitmq import get_tx_send_q_routing_key
 from settings.conf import settings
 from utils.default_logger import logger
+from utils.generic_worker import GenericAsyncWorker
 from utils.helpers import get_rabbitmq_channel
 from utils.helpers import get_rabbitmq_robust_connection_async
 from utils.redis_conn import RedisPool
 
+
 # day buffer due to chain migration or other issues
 DAY_BUFFER = 36
+
+
+def keccak_hash(x):
+    return sha3.keccak_256(x).digest()
 
 
 class Request(EIP712Struct):
@@ -46,42 +53,77 @@ class Request(EIP712Struct):
     projectId = String()
 
 
-def keccak_hash(x):
-    return sha3.keccak_256(x).digest()
-
-
-class GenericAsyncWorker(multiprocessing.Process):
-    _async_transport: AsyncHTTPTransport
+class TxChecker(multiprocessing.Process):
     _rmq_connection_pool: Pool
     _rmq_channel_pool: Pool
-    _w3: AsyncWeb3
-    _signer_account: ChecksumAddress
-    _signer_nonce: int
-    _signer_pkey: str
-    _abi: Dict[str, Any]
-    _protocol_state_contract: Any
-    _pairs: List[str]
 
-    def __init__(self, name, worker_idx, **kwargs):
+    def __init__(self, name, **kwargs):
         """
-        Initializes a GenericAsyncWorker instance.
+        Initializes a TxWorker object.
 
         Args:
             name (str): The name of the worker.
-            **kwargs: Additional keyword arguments to pass to the superclass constructor.
+            **kwargs: Additional keyword arguments to be passed to the AsyncWorker constructor.
         """
         self._core_rmq_consumer: asyncio.Task
         self._exchange_name = get_core_exchange_name()
         self._unique_id = f'{name}-' + keccak(text=str(uuid4())).hex()[:8]
-        self._running_callback_tasks: Dict[str, asyncio.Task] = dict()
-        super(GenericAsyncWorker, self).__init__(name=name, **kwargs)
+        super(TxChecker, self).__init__(name=name, **kwargs)
         self._protocol_state_contract = None
         self._qos = 1
-        self._rate_limiting_lua_scripts = None
         self.protocol_state_contract_address = settings.protocol_state_address
-        self._worker_idx = worker_idx
         self._initialized = False
         self.protocol_state_contract_instance_mapping = {}
+
+        self._q, self._rmq_routing = get_tx_check_q_routing_key()
+
+    async def _on_rabbitmq_message(self, message: IncomingMessage):
+        """
+        Callback function that is called when a message is received from RabbitMQ.
+        It processes the message and starts the processor task.
+
+        Args:
+            message (IncomingMessage): The incoming message from RabbitMQ.
+
+        Returns:
+            None
+        """
+        await message.ack()
+        await self.init()
+        try:
+            msg_obj: TxnPayload = TxnPayload.parse_raw(message.body)
+        except ValidationError as e:
+            self._logger.opt(exception=False).error(
+                (
+                    'Bad message structure of callback processor. Error: {}, {}'
+                ),
+                e, message.body,
+            )
+            return
+        except Exception as e:
+            self._logger.opt(exception=False).error(
+                (
+                    'Unexpected message structure of callback in processor. Error: {}'
+                ),
+                e,
+            )
+            return
+        else:
+            if await self._check(msg_obj):
+                self._logger.info(
+                    f'Processing message: {msg_obj}',
+                )
+                async with self._rmq_channel_pool.acquire() as channel:
+                    exchange = await channel.get_exchange(name=get_core_exchange_name())
+                    queue_name, routing_key = get_tx_send_q_routing_key()
+                    await exchange.publish(
+                        routing_key=routing_key,
+                        message=Message(msg_obj.json().encode('utf-8')),
+                    )
+            else:
+                self._logger.trace(
+                    f'Snapshot received but not submitted to chain because _check failed! {msg_obj}',
+                )
 
     def _signal_handler(self, signum, frame):
         """
@@ -116,6 +158,69 @@ class GenericAsyncWorker(multiprocessing.Process):
                 self._w3.to_checksum_address(contract_address)
             ]
 
+    async def _get_signer_address(self, txn_payload: TxnPayload):
+        """
+        Get Signer Address
+        """
+
+        request_ = txn_payload.request.dict()
+        signature = bytes.fromhex(txn_payload.signature[2:])
+        signature_request = Request(
+            slotId=request_['slotId'],
+            deadline=request_['deadline'],
+            snapshotCid=request_['snapshotCid'],
+            epochId=request_['epochId'],
+            projectId=request_['projectId'],
+        )
+
+        domain_separator = make_domain(
+            name='PowerloomProtocolContract',
+            version='0.1', chainId=settings.anchor_chain.chain_id,
+            verifyingContract=self._w3.to_checksum_address(
+                txn_payload.contractAddress,
+            ),
+        )
+
+        signable_bytes = signature_request.signable_bytes(domain_separator)
+        message_hash = keccak_hash(signable_bytes)
+        signer_address = self._w3.eth.account._recover_hash(
+            message_hash, signature=signature,
+        )
+        return signer_address
+
+    async def _check(self, txn_payload: TxnPayload):
+        # get timeslot preference
+        timeslot_pref = await self.reader_redis_pool.get(timeslot_preference(txn_payload.slotId))
+        if timeslot_pref:
+            timeslot_pref = int(timeslot_pref.decode('utf-8'))
+        else:
+            timeslot_pref = await self._protocol_state_contract.functions.getSnapshotterTimeSlot(
+                txn_payload.slotId,
+            ).call()
+            if timeslot_pref:
+                await self.writer_redis_pool.set(
+                    timeslot_preference(txn_payload.slotId), timeslot_pref,
+                )
+        if not timeslot_pref:
+            return False
+        if (txn_payload.epochId % self.epochs_in_a_day) // (self.epochs_in_a_day // self.slots_per_day) != timeslot_pref - 1:
+            return False
+
+        current_epoch = txn_payload.epochId
+        snapshotter_address = await self._get_signer_address(txn_payload)
+        snapshotter_hash = hash(int(snapshotter_address.lower(), 16))
+
+        current_day = (current_epoch // 720) + DAY_BUFFER
+
+        pair_idx = (
+            current_epoch + snapshotter_hash + txn_payload.slotId +
+            current_day
+        ) % len(self._pairs)
+        # projectId check
+        if self._pairs[pair_idx].lower() not in txn_payload.projectId.lower():
+            return False
+        return True
+
     async def _rabbitmq_consumer(self, loop):
         """
         Consume messages from a RabbitMQ queue.
@@ -148,14 +253,6 @@ class GenericAsyncWorker(multiprocessing.Process):
             await q_obj.bind(exchange, routing_key=self._rmq_routing)
             await q_obj.consume(self._on_rabbitmq_message)
 
-    async def _on_rabbitmq_message(self, message: IncomingMessage):
-        """
-        Callback function that is called when a message is received from RabbitMQ.
-
-        :param message: The incoming message from RabbitMQ.
-        """
-        pass
-
     async def _init_redis_pool(self):
         """
         Initializes the Redis pool for the worker.
@@ -177,11 +274,6 @@ class GenericAsyncWorker(multiprocessing.Process):
                 settings.anchor_chain.rpc.full_nodes[0].url,
             ),
         )
-        self._signer_account = Web3.to_checksum_address(
-            settings.signers[self._worker_idx].address,
-        )
-        self._signer_nonce = await self._w3.eth.get_transaction_count(self._signer_account)
-        self._signer_pkey = settings.signers[self._worker_idx].private_key
         self._protocol_state_contract = self._w3.eth.contract(
             address=Web3.to_checksum_address(settings.protocol_state_address), abi=self._abi,
         )
@@ -190,19 +282,6 @@ class GenericAsyncWorker(multiprocessing.Process):
         self.source_chain_block_time = (await self._protocol_state_contract.functions.SOURCE_CHAIN_BLOCK_TIME().call()) / 1e4
         self.epochs_in_a_day = 86400 // (
             self.epoch_size * self.source_chain_block_time
-        )
-
-        balance = await self._w3.eth.get_balance(self._signer_account)
-        # convert to eth
-        balance = self._w3.from_wei(balance, 'ether')
-        if balance < settings.min_signer_balance_eth:
-            logger.error(
-                f'Signer {self._signer_account} has insufficient balance: {balance} ETH',
-            )
-            exit(1)
-        self._rwlock = aiorwlock.RWLock(fast=True)
-        logger.info(
-            f'Started worker {self._worker_idx}, with signer_account: {self._signer_account}, signer_nonce: {self._signer_nonce}',
         )
 
     async def init(self):

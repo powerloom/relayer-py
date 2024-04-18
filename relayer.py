@@ -19,7 +19,7 @@ from tenacity import wait_random_exponential
 
 from data_models import TxnPayload
 from init_rabbitmq import get_core_exchange_name
-from init_rabbitmq import get_tx_send_q_routing_key
+from init_rabbitmq import get_tx_check_q_routing_key
 from utils.default_logger import logger
 from utils.helpers import get_rabbitmq_channel
 from utils.helpers import get_rabbitmq_robust_connection_async
@@ -99,7 +99,7 @@ async def submit_snapshot(request: FastAPIRequest, txn_payload: TxnPayload):
     """
     async with request.app.state.rmq_channel_pool.acquire() as channel:
         exchange = await channel.get_exchange(name=get_core_exchange_name())
-        queue_name, routing_key = get_tx_send_q_routing_key()
+        queue_name, routing_key = get_tx_check_q_routing_key()
         await exchange.publish(
             routing_key=routing_key,
             message=Message(txn_payload.json().encode('utf-8')),

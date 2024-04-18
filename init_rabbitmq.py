@@ -1,7 +1,6 @@
 from typing import Tuple
 
 import pika
-from fastapi import routing
 
 from settings.conf import settings
 from utils.default_logger import logger
@@ -45,6 +44,12 @@ def get_core_exchange_name() -> str:
 def get_tx_send_q_routing_key() -> Tuple[str, str]:
     queue_name = 'txSendQueue'
     routing_key = 'txsend'
+    return queue_name, routing_key
+
+
+def get_tx_check_q_routing_key() -> Tuple[str, str]:
+    queue_name = 'txCheckQueue'
+    routing_key = 'txcheck'
     return queue_name, routing_key
 
 
@@ -100,6 +105,14 @@ def init_exchanges_queues():
         'Initialized RabbitMQ Direct exchange: {}', exchange_name,
     )
     queue_name, routing_key = get_tx_send_q_routing_key()
+    init_queue(
+        ch,
+        exchange_name=exchange_name,
+        queue_name=queue_name,
+        routing_key=routing_key,
+    )
+
+    queue_name, routing_key = get_tx_check_q_routing_key()
     init_queue(
         ch,
         exchange_name=exchange_name,

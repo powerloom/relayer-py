@@ -1,12 +1,6 @@
 import asyncio
-import time
 
-import sha3
-import tenacity
 from aio_pika import IncomingMessage
-from eip712_structs import EIP712Struct
-from eip712_structs import String
-from eip712_structs import Uint
 from pydantic import ValidationError
 from tenacity import retry
 from tenacity import retry_if_exception_type
@@ -15,22 +9,9 @@ from tenacity import wait_random_exponential
 
 from data_models import TxnPayload
 from init_rabbitmq import get_tx_send_q_routing_key
-from utils.default_logger import logger
 from utils.generic_worker import GenericAsyncWorker
 from utils.helpers import aiorwlock_aqcuire_release
 from utils.transaction_utils import write_transaction
-
-
-def keccak_hash(x):
-    return sha3.keccak_256(x).digest()
-
-
-class Request(EIP712Struct):
-    slotId = Uint()
-    deadline = Uint()
-    snapshotCid = String()
-    epochId = Uint()
-    projectId = String()
 
 
 class TxWorker(GenericAsyncWorker):
@@ -147,14 +128,6 @@ class TxWorker(GenericAsyncWorker):
             )
             return
         else:
-            if await self._check(msg_obj):
-                self._logger.info(
-                    f'Processing message: {msg_obj}',
-                )
-                asyncio.ensure_future(
-                    self.submit_snapshot(txn_payload=msg_obj),
-                )
-            else:
-                self._logger.trace(
-                    f'Snapshot received but not submitted to chain because _check failed! {msg_obj}',
-                )
+            asyncio.ensure_future(
+                self.submit_snapshot(txn_payload=msg_obj),
+            )
