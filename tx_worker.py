@@ -64,8 +64,6 @@ class TxWorker(GenericAsyncWorker):
                 txn_payload.signature,
             )
 
-            self._signer_nonce += 1
-
             self._logger.info(
                 f'submitted transaction with tx_hash: {tx_hash}, payload {txn_payload}',
             )
