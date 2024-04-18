@@ -39,10 +39,9 @@ class TxWorker(GenericAsyncWorker):
         """
         Submit Snapshot
         """
-        await self._rwlock.writer_lock.acquire()
-        _nonce = self._signer_nonce
-        self._signer_nonce += 1
-        self._rwlock.writer_lock.release()
+        async with self._rwlock.writer_lock:
+            _nonce = self._signer_nonce
+            self._signer_nonce += 1
 
         protocol_state_contract = await self.get_protocol_state_contract(txn_payload.contractAddress)
         self._logger.trace(f'nonce: {_nonce}')
@@ -73,35 +72,31 @@ class TxWorker(GenericAsyncWorker):
             await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=5)
 
         except Exception as e:
-            if 'nonce too low' in str(e):
-                error = eval(str(e))
-                message = error['message']
-                next_nonce = int(message.split('next nonce ')[1].split(',')[0])
-                self._logger.info(
-                    'Nonce too low error. Next nonce: {}', next_nonce,
-                )
-                await self._rwlock.writer_lock.acquire()
-                self._signer_nonce = next_nonce
-                self._rwlock.writer_lock.release()
-                # reset queue
-                raise Exception('nonce error, reset nonce')
-            else:
-                self._logger.info(
-                    'Error submitting snapshot. Retrying...',
-                )
-                # sleep for two seconds before updating nonce
-                time.sleep(2)
+            self._logger.info(
+                'Error submitting snapshot. Retrying...',
+            )
+            # sleep for two seconds before updating nonce
+            time.sleep(2)
+            try:
                 correct_nonce = await self._w3.eth.get_transaction_count(
                     self._signer_account,
                 )
-                await self._rwlock.writer_lock.acquire()
-                self._signer_nonce = correct_nonce
-                self._rwlock.writer_lock.release()
-
-                self._logger.info(
-                    f'nonce for {self._signer_account} reset to: {self._signer_nonce}',
+                if type(correct_nonce) != int:
+                    raise Exception('unable to reset nonce')
+                if not correct_nonce:
+                    raise Exception('unable to reset nonce')
+            except Exception as e:
+                self._logger.error(
+                    'Error getting correct nonce: {}', e,
                 )
                 raise e
+            async with self._rwlock.writer_lock:
+                self._signer_nonce = correct_nonce
+
+            self._logger.info(
+                f'nonce for {self._signer_account} reset to: {self._signer_nonce}',
+            )
+            raise e
         else:
             return tx_hash
 
