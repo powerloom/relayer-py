@@ -97,13 +97,8 @@ class TxWorker(GenericAsyncWorker):
             self._logger.info(
                 f'submitted transaction with tx_hash: {tx_hash}, payload {txn_payload}',
             )
-            if not tx_hash:
-                self._logger.info('tx_hash is None for submission task')
-                self._logger.info(
-                    'Using signer {} for submission task. Put nonce {} back in queue',
-                    self._signer_account, self._signer_nonce - 1,
-                )
-                await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=10)
+
+            await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=10)
 
         except Exception as e:
             if 'nonce too low' in str(e):
