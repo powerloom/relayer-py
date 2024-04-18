@@ -25,15 +25,6 @@ def keccak_hash(x):
     return sha3.keccak_256(x).digest()
 
 
-def teancity_retry_callback(retry_state: tenacity.RetryCallState):
-    if retry_state.attempt_number >= 3:
-        logger.error('Txn signing worker failed after 3 attempts')
-    else:
-        logger.warning(
-            f'Tx signing worker attempt number {retry_state.attempt_number} result {retry_state.outcome}',
-        )
-
-
 class Request(EIP712Struct):
     slotId = Uint()
     deadline = Uint()
@@ -61,9 +52,8 @@ class TxWorker(GenericAsyncWorker):
     @retry(
         reraise=True,
         retry=retry_if_exception_type(Exception),
-        wait=wait_random_exponential(multiplier=1, max=2),
+        wait=wait_random_exponential(multiplier=0, max=2),
         stop=stop_after_attempt(3),
-        after=teancity_retry_callback,
     )
     async def submit_snapshot(self, txn_payload: TxnPayload):
         """
@@ -98,7 +88,7 @@ class TxWorker(GenericAsyncWorker):
                 f'submitted transaction with tx_hash: {tx_hash}, payload {txn_payload}',
             )
 
-            await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=10)
+            await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=5)
 
         except Exception as e:
             if 'nonce too low' in str(e):
@@ -113,9 +103,8 @@ class TxWorker(GenericAsyncWorker):
                 raise Exception('nonce error, reset nonce')
             else:
                 self._logger.info(
-                    'replacement transaction underpriced, sleeping for 10 seconds, then retrying...',
+                    'Error submitting snapshot. Retrying...',
                 )
-                time.sleep(5)
                 self._signer_nonce = await self._w3.eth.get_transaction_count(
                     self._signer_account,
                 )

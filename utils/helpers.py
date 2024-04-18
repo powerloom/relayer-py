@@ -66,7 +66,7 @@ def aiorwlock_aqcuire_release(fn):
         )
         await self._rwlock.writer_lock.acquire()
         self._logger.info(
-            'Using signer {} for submission task. Acquired lock with signer filled in kwargs', self._signer_account,
+            'Using signer {} for submission task. Acquired lock', self._signer_account,
         )
         # self._logger.debug('Wrapping fn: {}', fn.__name__)
         try:
@@ -78,13 +78,6 @@ def aiorwlock_aqcuire_release(fn):
                 'Using signer {} for submission task. Incremented nonce {}',
                 self._signer_account, self._signer_nonce,
             )
-            try:
-                self._rwlock.writer_lock.release()
-            except Exception as e:
-                logger.error(
-                    'Error releasing rwlock: {}. But moving on regardless... | Context: '
-                    'Using signer {} for submission task. Acquiring lock', e, self._signer_account,
-                )
         except Exception as e:
             # this is ultimately reraised by tenacity once the retries are exhausted
             # nothing to do here
