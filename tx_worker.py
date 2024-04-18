@@ -127,7 +127,7 @@ class TxWorker(GenericAsyncWorker):
                     self._signer_account,
                 )
                 self._logger.info(
-                    f'nonce for {self._signer.address} reset to: {self._signer_nonce}',
+                    f'nonce for {self._signer_account} reset to: {self._signer_nonce}',
                 )
                 self.pending_nonces = Queue()
                 raise Exception(
