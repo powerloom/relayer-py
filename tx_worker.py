@@ -75,7 +75,7 @@ class TxWorker(GenericAsyncWorker):
             _nonce = self._signer_nonce
         else:
             try:
-                _nonce = await self.pending_nonces.get_nowait()
+                _nonce = self.pending_nonces.get_nowait()
             except asyncio.QueueEmpty:
                 _nonce = self._signer_nonce
 
