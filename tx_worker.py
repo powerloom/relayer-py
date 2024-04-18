@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 from aio_pika import IncomingMessage
 from pydantic import ValidationError
@@ -33,7 +34,7 @@ class TxWorker(GenericAsyncWorker):
     @retry(
         reraise=True,
         retry=retry_if_exception_type(Exception),
-        wait=wait_random_exponential(multiplier=0, max=2),
+        wait=wait_random_exponential(multiplier=1, max=2),
         stop=stop_after_attempt(3),
     )
     async def submit_snapshot(self, txn_payload: TxnPayload):
@@ -86,6 +87,8 @@ class TxWorker(GenericAsyncWorker):
                 self._logger.info(
                     'Error submitting snapshot. Retrying...',
                 )
+                # sleep for two seconds before updating nonce
+                time.sleep(2)
                 self._signer_nonce = await self._w3.eth.get_transaction_count(
                     self._signer_account,
                 )
