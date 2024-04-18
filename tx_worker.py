@@ -1,5 +1,6 @@
 import asyncio
 import time
+from asyncio import Queue
 
 import sha3
 import tenacity
@@ -26,9 +27,7 @@ def keccak_hash(x):
 
 
 def teancity_retry_callback(retry_state: tenacity.RetryCallState):
-    if retry_state.attempt_number >= 3:
-        # TODO: figure out how to access the retried functions state since retry_state.args returns the self object in a single tuple
-        # logger.error('Txn signing worker for payload {retry_state.args[1]} failed after 3 attempts')
+    if retry_state.attempt_number >= 2:
         logger.error('Txn signing worker failed after 3 attempts')
     else:
         logger.warning(
@@ -57,22 +56,29 @@ class TxWorker(GenericAsyncWorker):
         super(TxWorker, self).__init__(
             name=name, worker_idx=worker_idx, **kwargs,
         )
+        self.pending_nonces = Queue()
 
     # submitSnapshot
     @aiorwlock_aqcuire_release
     @retry(
         reraise=True,
         retry=retry_if_exception_type(Exception),
-        wait=wait_random_exponential(multiplier=1, max=10),
-        stop=stop_after_attempt(3),
+        wait=wait_random_exponential(multiplier=0, max=2),
+        stop=stop_after_attempt(2),
         after=teancity_retry_callback,
     )
     async def submit_snapshot(self, txn_payload: TxnPayload):
         """
         Submit Snapshot
         """
-        # ideally this should not be necessary given that async code can not be parallel
-        _nonce = self._signer_nonce
+        if self.pending_nonces.empty():
+            _nonce = self._signer_nonce
+        else:
+            try:
+                _nonce = await self.pending_nonces.get_nowait()
+            except asyncio.QueueEmpty:
+                _nonce = self._signer_nonce
+
         protocol_state_contract = await self.get_protocol_state_contract(txn_payload.contractAddress)
         self._logger.trace(f'nonce: {_nonce}')
         try:
@@ -100,22 +106,35 @@ class TxWorker(GenericAsyncWorker):
             self._logger.info(
                 f'submitted transaction with tx_hash: {tx_hash}, payload {txn_payload}',
             )
-
         except Exception as e:
-            self._logger.error(f'Exception: {e}')
-
-            if 'nonce' in str(e):
-                # sleep for 10 seconds and reset nonce
+            if 'nonce too low' in str(e):
+                error = eval(str(e))
+                message = error['message']
+                next_nonce = int(message.split('next nonce ')[1].split(',')[0])
+                self._logger.info(
+                    'Nonce too low error. Next nonce: {}', next_nonce,
+                )
+                self._signer_nonce = next_nonce
+                # reset queue
+                self.pending_nonces = Queue()
+                raise Exception('nonce error, reset nonce')
+            if 'replacement transaction underpriced' in str(e):
+                self._logger.info(
+                    'replacement transaction underpriced, sleeping for 10 seconds, then retrying...',
+                )
                 time.sleep(10)
                 self._signer_nonce = await self._w3.eth.get_transaction_count(
                     self._signer_account,
                 )
                 self._logger.info(
-                    f'nonce reset to: {self._signer_nonce}',
+                    f'nonce for {self._signer.address} reset to: {self._signer_nonce}',
                 )
-                raise Exception('nonce error, reset nonce')
+                self.pending_nonces = Queue()
+                raise Exception(
+                    'replacement transaction underpriced, retrying',
+                )
             else:
-                raise Exception('other error, still retrying')
+                raise e
         else:
             return tx_hash
 

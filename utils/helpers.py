@@ -1,4 +1,6 @@
+import random
 import sys
+import time
 from functools import wraps
 
 import aio_pika
@@ -61,39 +63,78 @@ def aiorwlock_aqcuire_release(fn):
     """
     @wraps(fn)
     async def wrapper(self, *args, **kwargs):
-        logger.trace('Acquiring writer lock')
+        self._logger.info(
+            'Using signer {} for submission task. Acquiring lock', self._signer_account,
+        )
         await self._rwlock.writer_lock.acquire()
-        logger.trace('Acquired writer lock')
+        kwargs.update(signer_in_use=self._signer)
+        self._logger.info(
+            'Using signer {} for submission task. Acquired lock with signer filled in kwargs', self._signer_account,
+        )
+        # self._logger.debug('Wrapping fn: {}', fn.__name__)
         try:
+            # including the retry calls
             tx_hash = await fn(self, *args, **kwargs)
 
-        except Exception as e:
-            logger.error(f'Exception: {e}')
-        else:
+            self._signer_nonce += 1
+            self._logger.info(
+                'Using signer {} for submission task. Incremented nonce {}',
+                self._signer_account, self._signer_nonce,
+            )
             try:
-                logger.trace('Releasing writer lock')
                 self._rwlock.writer_lock.release()
             except Exception as e:
                 logger.error(
-                    f'Error releasing rwlock: {e}. But moving on regardless...',
+                    'Error releasing rwlock: {}. But moving on regardless... | Context: '
+                    'Using signer {} for submission task. Acquiring lock', e, self._signer_account,
                 )
+        except Exception as e:
+            # this is ultimately reraised by tenacity once the retries are exhausted
+            # nothing to do here
+            self._logger.opt(exception=True).error(
+                f'Exception: {e}, Nonce: {self._signer_nonce}, Pending Nonces: {self.pending_nonces._queue}',
+            )
 
-            if tx_hash is not None:
+        else:
+            if not tx_hash:
+                self._logger.info('tx_hash is None for submission task')
+                await self.pending_nonces.put(self._signer_nonce - 1)
+                self._logger.info(
+                    'Using signer {} for submission task. Put nonce {} back in queue',
+                    self._signer_account, self._signer_nonce - 1,
+                )
+                self._logger.info(
+                    'Self.pending_nonces: {}',
+                    self.pending_nonces,
+                )
+            else:
                 try:
-                    receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash)
-
+                    receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=20)
                     if receipt['status'] == 0:
                         self._logger.info(
-                            f'tx_hash: {tx_hash} failed!, receipt: {receipt}, payload: {args}',
+                            'tx_hash: {} failed to gather success receipt after 20 seconds, receipt: {} | '
+                            'Context: Using signer {} for submission task',
+                            tx_hash, receipt, self._signer_account,
                         )
                     else:
                         self._logger.info(
-                            f'tx_hash: {tx_hash} succeeded!, payload: {args}',
+                            'tx_hash: {} succeeded for submission task', tx_hash,
                         )
                 except Exception as e:
                     self._logger.error(
-                        f'Error waiting for tx_hash: {tx_hash}, error: {e}',
+                        'tx_hash: {} failed to gather receipt after 20 seconds, error: {} | '
+                        'Context: Using signer {} for submission task',
+                        tx_hash, e, self._signer_account,
                     )
+                    await self.pending_nonces.put(self._signer_nonce - 1)
+        finally:
+            try:
+                self._rwlock.writer_lock.release()
+            except Exception as e:
+                logger.trace(
+                    'Error releasing rwlock: {}. But moving on regardless... | Context: '
+                    'Using signer {} for submission task: {}. Acquiring lock', e, self._signer_account, kwargs,
+                )
     return wrapper
 
 

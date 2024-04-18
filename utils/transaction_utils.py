@@ -20,10 +20,10 @@ async def write_transaction(w3, address, private_key, contract, function, nonce,
     # Create the function
     func = getattr(contract.functions, function)
     # Get the transaction
-    transaction = await func(*args).build_transaction({
+    transaction = func(*args).build_transaction({
         'from': address,
-        'gas': 2000000,
-        'gasPrice': w3.to_wei('0.0001', 'gwei'),
+        'gas': 500000,
+        'maxFeePerGas': w3.to_wei('0.01', 'gwei'),
         'nonce': nonce,
         'chainId': CHAIN_ID,
     })
