@@ -11,6 +11,7 @@ from tenacity import wait_random_exponential
 from data_models import TxnPayload
 from init_rabbitmq import get_tx_send_q_routing_key
 from utils.generic_worker import GenericAsyncWorker
+from utils.helpers import aiorwlock_aqcuire_release
 from utils.transaction_utils import write_transaction
 
 
@@ -28,6 +29,31 @@ class TxWorker(GenericAsyncWorker):
             name=name, worker_idx=worker_idx, **kwargs,
         )
 
+    @aiorwlock_aqcuire_release
+    async def _increment_nonce(self):
+        self._signer_nonce += 1
+        self._logger.info(
+            'Using signer {} for submission task. Incremented nonce {}',
+            self._signer_account, self._signer_nonce,
+        )
+
+    @aiorwlock_aqcuire_release
+    async def _reset_nonce(self, value: int = 0):
+        if value > 0:
+            self._signer_nonce = value
+            self._logger.info(
+                'Using signer {} for submission task. Reset nonce to {}',
+                self._signer_account, self._signer_nonce,
+            )
+        else:
+            self._signer_nonce = await self._w3.eth.get_transaction_count(
+                self._signer_account,
+            )
+            self._logger.info(
+                'Using signer {} for submission task. Reset nonce to {}',
+                self._signer_account, self._signer_nonce,
+            )
+
     # submitSnapshot
     @retry(
         reraise=True,
@@ -39,10 +65,8 @@ class TxWorker(GenericAsyncWorker):
         """
         Submit Snapshot
         """
-        async with self._rwlock.writer_lock:
-            _nonce = self._signer_nonce
-            self._signer_nonce += 1
-
+        _nonce = self._signer_nonce
+        await self._increment_nonce()
         protocol_state_contract = await self.get_protocol_state_contract(txn_payload.contractAddress)
         self._logger.trace(f'nonce: {_nonce}')
         try:
@@ -69,34 +93,28 @@ class TxWorker(GenericAsyncWorker):
                 f'submitted transaction with tx_hash: {tx_hash}, payload {txn_payload}',
             )
 
-            await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=5)
+            await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=20)
 
         except Exception as e:
-            self._logger.info(
-                'Error submitting snapshot. Retrying...',
-            )
-            # sleep for two seconds before updating nonce
-            time.sleep(2)
-            try:
-                correct_nonce = await self._w3.eth.get_transaction_count(
-                    self._signer_account,
+            if 'nonce too low' in str(e):
+                error = eval(str(e))
+                message = error['message']
+                next_nonce = int(message.split('next nonce ')[1].split(',')[0])
+                self._logger.info(
+                    'Nonce too low error. Next nonce: {}', next_nonce,
                 )
-                if type(correct_nonce) != int:
-                    raise Exception('unable to reset nonce')
-                if not correct_nonce:
-                    raise Exception('unable to reset nonce')
-            except Exception as e:
-                self._logger.error(
-                    'Error getting correct nonce: {}', e,
+                await self._reset_nonce(next_nonce)
+                # reset queue
+                raise Exception('nonce error, reset nonce')
+            else:
+                self._logger.info(
+                    'Error submitting snapshot. Retrying...',
                 )
-                raise e
-            async with self._rwlock.writer_lock:
-                self._signer_nonce = correct_nonce
+                # sleep for two seconds before updating nonce
+                time.sleep(2)
+                await self._reset_nonce()
 
-            self._logger.info(
-                f'nonce for {self._signer_account} reset to: {self._signer_nonce}',
-            )
-            raise e
+                raise e
         else:
             return tx_hash
 
