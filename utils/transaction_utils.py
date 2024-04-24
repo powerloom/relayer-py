@@ -24,7 +24,7 @@ async def write_transaction(
     # web3py v5: Returns a transaction dictionary.
     # This transaction dictionary can then be sent using send_transaction().
     # Get the transaction
-    transaction = func(*args).build_transaction({
+    transaction = await func(*args).build_transaction({
         'from': address,
         'gas': 500000,
         'maxFeePerGas': 2 * gas_price,
