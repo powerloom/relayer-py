@@ -1,6 +1,7 @@
 import asyncio
 import time
 
+import tenacity
 from aio_pika import IncomingMessage
 from pydantic import ValidationError
 from tenacity import retry
@@ -10,9 +11,33 @@ from tenacity import wait_random_exponential
 
 from data_models import TxnPayload
 from init_rabbitmq import get_tx_send_q_routing_key
+from utils.default_logger import logger
 from utils.generic_worker import GenericAsyncWorker
 from utils.helpers import aiorwlock_aqcuire_release
 from utils.transaction_utils import write_transaction
+
+
+def submit_snapshot_retry_callback(retry_state: tenacity.RetryCallState):
+    if retry_state.attempt_number >= 3:
+        logger.error(
+            'Txn signing worker failed after 3 attempts | Txn payload: {}', retry_state.kwargs[
+                'txn_payload'
+            ],
+        )
+    else:
+        if retry_state.outcome.failed:
+            # use priority gas too
+            if 'priority_gas_multiplier' not in retry_state.kwargs:
+                retry_state.kwargs['priority_gas_multiplier'] = 1
+            retry_state.kwargs['priority_gas_multiplier'] += 1
+            logger.info(
+                'Txn failed, retrying with priority gas multiplier {} | Txn payload: {}',
+            )
+        logger.warning(
+            'Tx signing attempt number {} result {} | Txn payload: {}',
+            retry_state.attempt_number, retry_state.outcome,
+            retry_state.kwargs['txn_payload'],
+        )
 
 
 class TxWorker(GenericAsyncWorker):
@@ -67,8 +92,9 @@ class TxWorker(GenericAsyncWorker):
         retry=retry_if_exception_type(Exception),
         wait=wait_random_exponential(multiplier=1, max=2),
         stop=stop_after_attempt(3),
+        after=submit_snapshot_retry_callback,
     )
-    async def submit_snapshot(self, txn_payload: TxnPayload):
+    async def submit_snapshot(self, txn_payload: TxnPayload, priority_gas_multiplier: int = 0):
         """
         Submit Snapshot
         """
@@ -84,6 +110,8 @@ class TxWorker(GenericAsyncWorker):
                 protocol_state_contract,
                 'submitSnapshot',
                 _nonce,
+                self._last_gas_price,
+                priority_gas_multiplier,
                 txn_payload.slotId,
                 txn_payload.snapshotCid,
                 txn_payload.epochId,
@@ -100,7 +128,9 @@ class TxWorker(GenericAsyncWorker):
                 f'submitted transaction with tx_hash: {tx_hash}, payload {txn_payload}',
             )
 
-            await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=20)
+            transaction_receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=20)
+            if 'baseFeePerGas' in transaction_receipt:
+                self._last_gas_price = transaction_receipt['baseFeePerGas']
 
         except Exception as e:
             if 'nonce too low' in str(e):
@@ -117,8 +147,8 @@ class TxWorker(GenericAsyncWorker):
                 self._logger.info(
                     'Error submitting snapshot. Retrying...',
                 )
-                # sleep for two seconds before updating nonce
-                time.sleep(2)
+                # sleep for 5 seconds before updating nonce
+                time.sleep(5)
                 await self._reset_nonce()
 
                 raise e

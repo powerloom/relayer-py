@@ -204,6 +204,8 @@ class GenericAsyncWorker(multiprocessing.Process):
         logger.info(
             f'Started worker {self._worker_idx}, with signer_account: {self._signer_account}, signer_nonce: {self._signer_nonce}',
         )
+        # setting a default value for gas price
+        self._last_gas_price = self._w3.to_wei('0.01', 'gwei')
 
     async def init(self):
         """
