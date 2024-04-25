@@ -55,12 +55,15 @@ class TxWorker(GenericAsyncWorker):
         )
 
     @aiorwlock_aqcuire_release
-    async def _increment_nonce(self):
+    async def _return_and_increment_nonce(self):
+
+        nonce = self._signer_nonce
         self._signer_nonce += 1
         self._logger.info(
             'Using signer {} for submission task. Incremented nonce {}',
             self._signer_account, self._signer_nonce,
         )
+        return nonce
 
     @aiorwlock_aqcuire_release
     async def _reset_nonce(self, value: int = 0):
@@ -98,8 +101,7 @@ class TxWorker(GenericAsyncWorker):
         """
         Submit Snapshot
         """
-        _nonce = self._signer_nonce
-        await self._increment_nonce()
+        _nonce = await self._return_and_increment_nonce()
         protocol_state_contract = await self.get_protocol_state_contract(txn_payload.contractAddress)
         self._logger.trace(f'nonce: {_nonce}')
         try:
