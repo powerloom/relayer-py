@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from functools import wraps
 
@@ -62,13 +63,25 @@ def aiorwlock_aqcuire_release(fn):
     @wraps(fn)
     async def wrapper(self, *args, **kwargs):
         self._logger.info(
-            'Using signer {} for submission task. Acquiring lock', self._signer_account,
+            'Using signer {} for submission task. Acquiring lock {}', self._signer_account, self._rwlock,
         )
-        await self._rwlock.writer_lock.acquire()
+        try:
+            await asyncio.wait_for(self._rwlock.writer_lock.acquire(), timeout=10)
+        except:
+            try:
+                self._rwlock.writer_lock.release()
+            except Exception as e:
+                logger.trace(
+                    'Error releasing rwlock: {}. But moving on regardless... | Context: '
+                    'Using signer {} for submission task: {}.', e, self._signer_account, kwargs,
+                )
+            # retry from submit snapshot will take care of resubmission
+            raise Exception('Unable to acquire lock before timeout!')
+
         self._logger.info(
             'Using signer {} for submission task. Acquired lock', self._signer_account,
         )
-        # self._logger.debug('Wrapping fn: {}', fn.__name__)
+
         try:
             # including the retry calls
             return await fn(self, *args, **kwargs)
@@ -77,8 +90,8 @@ def aiorwlock_aqcuire_release(fn):
             self._logger.opt(exception=True).error(
                 'Error in using signer {} for submission task: {}', self._signer_account, e,
             )
-            # nothing to do here
-            pass
+            # retry from submit snapshot will take care of resubmission
+            raise e
         finally:
             try:
                 self._rwlock.writer_lock.release()
