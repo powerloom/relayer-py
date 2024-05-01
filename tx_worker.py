@@ -130,7 +130,7 @@ class TxWorker(GenericAsyncWorker):
                 f'submitted transaction with tx_hash: {tx_hash}, payload {txn_payload}',
             )
 
-            transaction_receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=20)
+            transaction_receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
             if 'baseFeePerGas' in transaction_receipt:
                 self._last_gas_price = transaction_receipt['baseFeePerGas']
 
@@ -149,8 +149,6 @@ class TxWorker(GenericAsyncWorker):
                 self._logger.info(
                     'Error submitting snapshot. Retrying...',
                 )
-                # sleep for 5 seconds before updating nonce
-                time.sleep(5)
                 await self._reset_nonce()
 
                 raise e
