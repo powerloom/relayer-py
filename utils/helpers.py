@@ -66,7 +66,7 @@ def aiorwlock_aqcuire_release(fn):
             'Using signer {} for submission task. Acquiring lock {}', self._signer_account, self._rwlock,
         )
         try:
-            await asyncio.wait_for(self._rwlock.writer_lock.acquire(), timeout=10)
+            await asyncio.wait_for(self._rwlock.writer_lock.acquire(), timeout=30)
         except:
             try:
                 self._rwlock.writer_lock.release()
