@@ -210,7 +210,7 @@ class TxChecker(multiprocessing.Process):
         snapshotter_address = await self._get_signer_address(txn_payload)
         snapshotter_hash = hash(int(snapshotter_address.lower(), 16))
 
-        current_day = (current_epoch // 720) + DAY_BUFFER
+        current_day = (current_epoch // self.epochs_in_a_day) + DAY_BUFFER
 
         pair_idx = (
             current_epoch + snapshotter_hash + txn_payload.slotId +
