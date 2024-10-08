@@ -105,6 +105,7 @@ class SettingsConf(BaseModel):
     protocol_state_address: str
     signers: List[Signer]
     min_signer_balance_eth: int
+    auth_token: str
 
 
 class ProcessorWorkerDetails(BaseModel):
@@ -136,6 +137,7 @@ class BatchSizeRequest(BaseModel):
     """Request model for batch size operations."""
     batchSize: int
     epochId: int
+    authToken: str
 
 
 class BatchSubmissionRequest(BaseModel):
@@ -147,6 +149,7 @@ class BatchSubmissionRequest(BaseModel):
     projectIds: List[str]
     snapshotCids: List[str]
     finalizedCidsRootHash: str
+    authToken: str
 
 
 class WalletRegistrationRequest(BaseModel):

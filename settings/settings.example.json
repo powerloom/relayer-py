@@ -53,5 +53,6 @@
             "private_key": "0x0000"
         }
     ],
-	"min_signer_balance_eth": 1
+	"min_signer_balance_eth": 1,
+	"auth_token": ""
 }

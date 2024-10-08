@@ -174,6 +174,11 @@ async def submit_batch_size(
     Returns:
         JSONResponse: A JSON response indicating success or failure.
     """
+    if req_parsed.authToken != settings.auth_token:
+        return JSONResponse(
+            status_code=401,
+            content={'message': 'Unauthorized'},
+        )
     try:
         # Store batch size in Redis
         await request.app.state.writer_redis_pool.set(
@@ -212,6 +217,11 @@ async def submit_batch_submission(
     Returns:
         JSONResponse: A JSON response indicating success or failure.
     """
+    if req_parsed.authToken != settings.auth_token:
+        return JSONResponse(
+            status_code=401,
+            content={'message': 'Unauthorized'},
+        )
     try:
         await submit_batch(request, req_parsed)
         return JSONResponse(
