@@ -230,7 +230,7 @@ class GenericAsyncWorker(multiprocessing.Process):
         )
 
         # Get current gas price
-        self._last_gas_price = await self._w3.eth.get_gas_price()
+        self._last_gas_price = await self._w3.eth.gas_price
 
     async def init(self):
         """
