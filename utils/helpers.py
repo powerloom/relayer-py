@@ -30,35 +30,28 @@ def cleanup_proc_hub_children(fn):
                 'Received an exception on process hub core run(): {}',
                 e,
             )
-            # logger.error('Initiating kill children....')
-            # # silently kill all children
-            # procs = psutil.Process().children()
-            # for p in procs:
-            #     p.terminate()
-            # gone, alive = psutil.wait_procs(procs, timeout=3)
-            # for p in alive:
-            #     logger.error(f'killing process: {p.name()}')
-            #     p.kill()
+            # Kill all child processes
             self._kill_all_children()
             logger.error('Finished waiting for all children...now can exit.')
         finally:
             logger.error('Finished waiting for all children...now can exit.')
             self._reporter_thread.join()
             sys.exit(0)
-            # sys.exit(0)
     return wrapper
 
 
 def aiorwlock_aqcuire_release(fn):
     """
-    A decorator that wraps a function and handles cleanup of any child processes
-    spawned by the function in case of an exception.
+    A decorator that acquires and releases an asynchronous read-write lock around a function.
+
+    This decorator ensures that the wrapped function is executed with exclusive write access,
+    preventing concurrent execution of multiple instances of the decorated function.
 
     Args:
-        fn (function): The function to be wrapped.
+        fn (function): The asynchronous function to be wrapped.
 
     Returns:
-        function: The wrapped function.
+        function: The wrapped asynchronous function.
     """
     @wraps(fn)
     async def wrapper(self, *args, **kwargs):
@@ -72,29 +65,33 @@ def aiorwlock_aqcuire_release(fn):
         )
 
         try:
-            # including the retry calls
+            # Execute the wrapped function
             result = await fn(self, *args, **kwargs)
-
         except Exception as e:
             self._logger.opt(exception=True).error(
                 'Error in using signer {} for submission task: {}', self._signer_account, e,
             )
-            pass
         finally:
             try:
+                # Always attempt to release the lock, even if an exception occurred
                 self._rwlock.writer_lock.release()
             except Exception as e:
                 logger.trace(
                     'Error releasing rwlock: {}. But moving on regardless... | Context: '
                     'Using signer {} for submission task: {}.', e, self._signer_account, kwargs,
                 )
-            return result
+        return result
     return wrapper
 
 
 async def get_rabbitmq_robust_connection_async():
     """
-    Returns a robust connection to RabbitMQ server using the settings specified in the configuration file.
+    Establishes a robust connection to RabbitMQ server using the settings specified in the configuration file.
+
+    This function creates a connection that automatically recovers from network failures.
+
+    Returns:
+        aio_pika.Connection: A robust connection to RabbitMQ.
     """
     return await aio_pika.connect_robust(
         host=settings.rabbitmq.host,
@@ -107,9 +104,12 @@ async def get_rabbitmq_robust_connection_async():
 
 async def get_rabbitmq_basic_connection_async():
     """
-    Returns an async connection to RabbitMQ using the settings specified in the config file.
+    Establishes a basic asynchronous connection to RabbitMQ using the settings specified in the config file.
 
-    :return: An async connection to RabbitMQ.
+    This function creates a standard connection without automatic recovery features.
+
+    Returns:
+        aio_pika.Connection: A basic asynchronous connection to RabbitMQ.
     """
     return await aio_pika.connect(
         host=settings.rabbitmq.host,
@@ -124,11 +124,13 @@ async def get_rabbitmq_channel(connection_pool: Pool) -> aio_pika.Channel:
     """
     Acquires a connection from the connection pool and returns a channel object for RabbitMQ communication.
 
+    This function manages the lifecycle of the connection and channel, ensuring proper resource management.
+
     Args:
-        connection_pool: An instance of `aio_pika.pool.Pool`.
+        connection_pool (aio_pika.pool.Pool): An instance of the connection pool.
 
     Returns:
-        An instance of `aio_pika.Channel`.
+        aio_pika.Channel: A channel object for communicating with RabbitMQ.
     """
     async with connection_pool.acquire() as connection:
         return await connection.channel()

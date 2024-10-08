@@ -5,18 +5,18 @@ import pika
 from settings.conf import settings
 from utils.default_logger import logger
 
-# setup logging
+# Setup logging for RabbitMQ initialization
 init_rmq_logger = logger.bind(module='Powerloom|RabbitMQ|Init')
 
 
 def create_rabbitmq_conn() -> pika.BlockingConnection:
     """
-    Creates a connection to RabbitMQ using the settings specified in the application configuration.
+    Create a connection to RabbitMQ using the settings specified in the application configuration.
 
     Returns:
-        A `pika.BlockingConnection` object representing the connection to RabbitMQ.
+        pika.BlockingConnection: A connection object representing the connection to RabbitMQ.
     """
-    c = pika.BlockingConnection(
+    connection = pika.BlockingConnection(
         pika.ConnectionParameters(
             host=settings.rabbitmq.host,
             port=settings.rabbitmq.port,
@@ -28,12 +28,12 @@ def create_rabbitmq_conn() -> pika.BlockingConnection:
             heartbeat=30,
         ),
     )
-    return c
+    return connection
 
 
 def get_core_exchange_name() -> str:
     """
-    Returns the name of the core exchange for the application.
+    Get the name of the core exchange for the application.
 
     Returns:
         str: The name of the core exchange.
@@ -42,12 +42,24 @@ def get_core_exchange_name() -> str:
 
 
 def get_tx_send_q_routing_key() -> Tuple[str, str]:
+    """
+    Get the queue name and routing key for transaction sending.
+
+    Returns:
+        Tuple[str, str]: A tuple containing the queue name and routing key.
+    """
     queue_name = 'txSendQueue'
     routing_key = 'txsend'
     return queue_name, routing_key
 
 
 def get_tx_check_q_routing_key() -> Tuple[str, str]:
+    """
+    Get the queue name and routing key for transaction checking.
+
+    Returns:
+        Tuple[str, str]: A tuple containing the queue name and routing key.
+    """
     queue_name = 'txCheckQueue'
     routing_key = 'txcheck'
     return queue_name, routing_key
@@ -64,25 +76,27 @@ def init_queue(
     Declare a queue and optionally bind it to an exchange with a routing key.
 
     Args:
-        ch: A blocking channel object from a Pika connection.
-        queue_name: The name of the queue to declare.
-        routing_key: The routing key to use for binding the queue to an exchange.
-        exchange_name: The name of the exchange to bind the queue to.
-        bind: Whether or not to bind the queue to the exchange. Defaults to True.
+        ch (pika.adapters.blocking_connection.BlockingChannel): A blocking channel object from a Pika connection.
+        queue_name (str): The name of the queue to declare.
+        routing_key (str): The routing key to use for binding the queue to an exchange.
+        exchange_name (str): The name of the exchange to bind the queue to.
+        bind (bool, optional): Whether or not to bind the queue to the exchange. Defaults to True.
 
     Returns:
         None
     """
+    # Declare the queue
     ch.queue_declare(queue_name)
+
+    # Bind the queue to the exchange if specified
     if bind:
         ch.queue_bind(
             exchange=exchange_name, queue=queue_name, routing_key=routing_key,
         )
+
+    # Log the initialization of the queue
     init_rmq_logger.debug(
-        (
-            'Initialized RabbitMQ setup | Queue: {} | Exchange: {} | Routing'
-            ' Key: {}'
-        ),
+        'Initialized RabbitMQ setup | Queue: {} | Exchange: {} | Routing Key: {}',
         queue_name,
         exchange_name,
         routing_key,
@@ -91,30 +105,37 @@ def init_queue(
 
 def init_exchanges_queues():
     """
-    Initializes the RabbitMQ Direct exchange and queues required for snapshotter.
+    Initialize the RabbitMQ Direct exchange and queues required for the snapshotter.
+
+    This function sets up the core exchange and initializes the necessary queues
+    for transaction sending and checking.
     """
-    c = create_rabbitmq_conn()
-    ch: pika.adapters.blocking_connection.BlockingChannel = c.channel()
-    # core exchange remains same for multiple snapshotter instances
-    #  in the namespace to share across different instance IDs
+    # Create a connection to RabbitMQ
+    connection = create_rabbitmq_conn()
+    channel: pika.adapters.blocking_connection.BlockingChannel = connection.channel()
+
+    # Set up the core exchange
     exchange_name = get_core_exchange_name()
-    ch.exchange_declare(
+    channel.exchange_declare(
         exchange=exchange_name, exchange_type='direct', durable=True,
     )
     init_rmq_logger.debug(
         'Initialized RabbitMQ Direct exchange: {}', exchange_name,
     )
+
+    # Initialize the transaction send queue
     queue_name, routing_key = get_tx_send_q_routing_key()
     init_queue(
-        ch,
+        channel,
         exchange_name=exchange_name,
         queue_name=queue_name,
         routing_key=routing_key,
     )
 
+    # Initialize the transaction check queue
     queue_name, routing_key = get_tx_check_q_routing_key()
     init_queue(
-        ch,
+        channel,
         exchange_name=exchange_name,
         queue_name=queue_name,
         routing_key=routing_key,
@@ -122,4 +143,5 @@ def init_exchanges_queues():
 
 
 if __name__ == '__main__':
+    # Initialize RabbitMQ exchanges and queues when the script is run directly
     init_exchanges_queues()

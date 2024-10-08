@@ -17,25 +17,30 @@ from tenacity import retry_if_exception_type
 from tenacity import stop_after_attempt
 from tenacity import wait_random_exponential
 
-from data_models import TxnPayload
+from data_models import BatchSizeRequest
+from data_models import BatchSubmissionRequest
+from helpers.redis_keys import epoch_batch_size
 from init_rabbitmq import get_core_exchange_name
 from init_rabbitmq import get_tx_check_q_routing_key
+from settings.conf import settings
 from utils.default_logger import logger
 from utils.helpers import get_rabbitmq_channel
 from utils.helpers import get_rabbitmq_robust_connection_async
+from utils.redis_conn import RedisPool
 
-
+# Initialize logger for the relayer service
 service_logger = logger.bind(
     service='PowerLoom|OnChainConsensus|Relayer',
 )
 
-# setup CORS origins stuff
+# Setup CORS origins
 origins = ['*']
 
+# Initialize FastAPI app
 app = FastAPI()
 app.logger = service_logger
 
-
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -46,7 +51,24 @@ app.add_middleware(
 
 
 @app.middleware('http')
-async def request_middleware(request: FastAPIRequest, call_next: Any) -> Optional[Dict]:
+async def request_middleware(
+    request: FastAPIRequest,
+    call_next: Any,
+) -> Optional[Dict]:
+    """
+    Middleware to handle incoming HTTP requests.
+
+    This middleware function logs the start and end of each request,
+    generates a unique request ID, and handles any exceptions that occur
+    during request processing.
+
+    Args:
+        request (FastAPIRequest): The incoming request object.
+        call_next (Any): The next function in the middleware chain.
+
+    Returns:
+        Optional[Dict]: The response dictionary, or None if an error occurs.
+    """
     request_id = str(uuid.uuid4())
     request.state.request_id = request_id
 
@@ -54,21 +76,18 @@ async def request_middleware(request: FastAPIRequest, call_next: Any) -> Optiona
         service_logger.info('Request started for: {}', request.url)
         try:
             response = await call_next(request)
-
         except Exception as ex:
             service_logger.opt(exception=True).error(f'Request failed: {ex}')
-
             response = JSONResponse(
                 content={
-                    'info':
-                        {
-                            'success': False,
-                            'response': 'Internal Server Error',
-                        },
+                    'info': {
+                        'success': False,
+                        'response': 'Internal Server Error',
+                    },
                     'request_id': request_id,
-                }, status_code=500,
+                },
+                status_code=500,
             )
-
         finally:
             response.headers['X-Request-ID'] = request_id
             service_logger.info('Request ended')
@@ -77,53 +96,131 @@ async def request_middleware(request: FastAPIRequest, call_next: Any) -> Optiona
 
 @app.on_event('startup')
 async def startup_boilerplate():
+    """
+    Initialize necessary components on application startup.
+
+    This function sets up Redis pools, RabbitMQ connection pools,
+    and RabbitMQ channel pools for the application to use.
+    """
+    # Initialize Redis pools
+    app.state.aioredis_pool = RedisPool(writer_redis_conf=settings.redis)
+    await app.state.aioredis_pool.populate()
+    app.state.reader_redis_pool = app.state.aioredis_pool.reader_redis_pool
+    app.state.writer_redis_pool = app.state.aioredis_pool.writer_redis_pool
+
+    # Initialize RabbitMQ connection pool
     app.state.rmq_connection_pool = Pool(
-        get_rabbitmq_robust_connection_async, max_size=5, loop=asyncio.get_running_loop(),
+        get_rabbitmq_robust_connection_async,
+        max_size=5,
+        loop=asyncio.get_running_loop(),
     )
+
+    # Initialize RabbitMQ channel pool
     app.state.rmq_channel_pool = Pool(
-        partial(get_rabbitmq_channel, app.state.rmq_connection_pool), max_size=20,
+        partial(get_rabbitmq_channel, app.state.rmq_connection_pool),
+        max_size=20,
         loop=asyncio.get_running_loop(),
     )
 
 
-# submitSnapshot
 @retry(
     reraise=True,
     retry=retry_if_exception_type(Exception),
     wait=wait_random_exponential(multiplier=1, max=10),
     stop=stop_after_attempt(3),
 )
-async def submit_snapshot(request: FastAPIRequest, txn_payload: TxnPayload):
+async def submit_batch(
+    request: FastAPIRequest,
+    batch_payload: BatchSubmissionRequest,
+):
     """
-    Submit Snapshot
+    Submit a snapshot to the RabbitMQ exchange.
+
+    This function publishes a batch submission request to a RabbitMQ exchange.
+    It uses a retry decorator to handle potential failures.
+
+    Args:
+        request (FastAPIRequest): The incoming request object.
+        batch_payload (BatchSubmissionRequest): The batch payload to be submitted.
+
+    Raises:
+        Exception: If the submission fails after all retry attempts.
     """
     async with request.app.state.rmq_channel_pool.acquire() as channel:
         exchange = await channel.get_exchange(name=get_core_exchange_name())
         queue_name, routing_key = get_tx_check_q_routing_key()
         await exchange.publish(
             routing_key=routing_key,
-            message=Message(txn_payload.json().encode('utf-8')),
+            message=Message(batch_payload.json().encode('utf-8')),
         )
 
 
-@app.post('/submitSnapshot')
-async def submit(
+@app.post('/submitBatchSize')
+async def submit_batch_size(
     request: FastAPIRequest,
-    req_parsed: TxnPayload,
+    req_parsed: BatchSizeRequest,
     response: Response,
 ):
     """
-    Submit Snapshot
+    Submit batch size to Redis.
+
+    This endpoint receives a batch size request and stores it in Redis.
+
+    Args:
+        request (FastAPIRequest): The incoming request object.
+        req_parsed (BatchSizeRequest): The parsed batch size request.
+        response (Response): The response object.
+
+    Returns:
+        JSONResponse: A JSON response indicating success or failure.
     """
     try:
-        asyncio.ensure_future(
-            submit_snapshot(
-                request, req_parsed,
-            ),
+        # Store batch size in Redis
+        await request.app.state.writer_redis_pool.set(
+            epoch_batch_size(req_parsed.epochId),
+            req_parsed.batchSize,
         )
-
-        return JSONResponse(status_code=200, content={'message': 'Submitted Snapshot to relayer!'})
-
+        return JSONResponse(
+            status_code=200,
+            content={'message': 'Submitted Batch Size to relayer!'},
+        )
     except Exception as e:
         service_logger.opt(exception=True).error(f'Exception: {e}')
-        return JSONResponse(status_code=500, content={'message': 'Invalid request payload!'})
+        return JSONResponse(
+            status_code=500,
+            content={'message': 'Invalid request payload!'},
+        )
+
+
+@app.post('/submitSubmissionBatch')
+async def submit_batch_submission(
+    request: FastAPIRequest,
+    req_parsed: BatchSubmissionRequest,
+    response: Response,
+):
+    """
+    Submit a snapshot batch.
+
+    This endpoint receives a batch submission request and forwards it to the
+    submit_batch function for processing.
+
+    Args:
+        request (FastAPIRequest): The incoming request object.
+        req_parsed (BatchSubmissionRequest): The parsed batch submission request.
+        response (Response): The response object.
+
+    Returns:
+        JSONResponse: A JSON response indicating success or failure.
+    """
+    try:
+        await submit_batch(request, req_parsed)
+        return JSONResponse(
+            status_code=200,
+            content={'message': 'Submitted Snapshot to relayer!'},
+        )
+    except Exception as e:
+        service_logger.opt(exception=True).error(f'Exception: {e}')
+        return JSONResponse(
+            status_code=500,
+            content={'message': 'Invalid request payload!'},
+        )
