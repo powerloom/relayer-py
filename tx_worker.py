@@ -1,3 +1,5 @@
+import asyncio
+
 import tenacity
 from aio_pika import IncomingMessage
 from pydantic import ValidationError
@@ -5,6 +7,7 @@ from tenacity import retry
 from tenacity import retry_if_exception_type
 from tenacity import stop_after_attempt
 from tenacity import wait_random_exponential
+from web3.exceptions import TransactionNotFound
 
 from data_models import BatchSubmissionRequest
 from helpers.redis_keys import epoch_batch_size
@@ -120,7 +123,7 @@ class TxWorker(GenericAsyncWorker):
     @retry(
         reraise=True,
         retry=retry_if_exception_type(Exception),
-        wait=wait_random_exponential(multiplier=1, max=2),
+        wait=wait_random_exponential(multiplier=1, max=10),
         stop=stop_after_attempt(3),
         after=txn_retry_callback,
     )
@@ -142,7 +145,6 @@ class TxWorker(GenericAsyncWorker):
         protocol_state_contract = await self.get_protocol_state_contract(settings.protocol_state_address)
         self._logger.trace(f'nonce: {_nonce}')
         try:
-            # Attempt to submit the transaction
             tx_hash = await write_transaction(
                 self._w3,
                 self._signer_account,
@@ -162,15 +164,24 @@ class TxWorker(GenericAsyncWorker):
             )
 
             self._logger.info(
-                f'submitted transaction with tx_hash: {tx_hash}, payload {txn_payload}',
+                f'Submitted transaction with tx_hash: {tx_hash}, payload {txn_payload}',
             )
 
-            # Wait for transaction receipt and update gas price
-            transaction_receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-            if transaction_receipt.status != 1:
-                raise Exception('transaction failed')
-            if 'baseFeePerGas' in transaction_receipt:
-                self._last_gas_price = transaction_receipt['baseFeePerGas']
+            # Wait for transaction receipt with exponential backoff
+            receipt = None
+            for attempt in range(5):
+                try:
+                    receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30 * (2 ** attempt))
+                    break
+                except TransactionNotFound:
+                    if attempt == 4:
+                        raise
+                    await asyncio.sleep(5 * (2 ** attempt))
+
+            if 'baseFeePerGas' in receipt:
+                self._last_gas_price = receipt['baseFeePerGas']
+            if receipt.status != 1:
+                raise Exception('Transaction failed')
 
         except Exception as e:
             # Handle nonce errors
@@ -195,7 +206,7 @@ class TxWorker(GenericAsyncWorker):
     @retry(
         reraise=True,
         retry=retry_if_exception_type(Exception),
-        wait=wait_random_exponential(multiplier=1, max=2),
+        wait=wait_random_exponential(multiplier=1, max=10),
         stop=stop_after_attempt(3),
         after=txn_retry_callback,
     )
@@ -295,13 +306,17 @@ class TxWorker(GenericAsyncWorker):
             )
             return
         else:
-            # Submit the batch and process the result
             tx_hash = await self.submit_batch(txn_payload=msg_obj)
 
-            batch_size = await self.writer_redis_pool.get(epoch_batch_size(msg_obj.epochId))
-            if batch_size:
-                await self.writer_redis_pool.sadd(epoch_batch_submissions(msg_obj.epochId), tx_hash)
-                set_size = await self.writer_redis_pool.scard(epoch_batch_submissions(msg_obj.epochId))
-                if set_size == batch_size:
-                    # End the batch if all submissions are received
-                    await self.end_batch(data_market=msg_obj.dataMarket, epoch_id=msg_obj.epochId)
+            # Implement a more robust checking mechanism
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                batch_size = await self.writer_redis_pool.get(epoch_batch_size(msg_obj.epochId))
+                if batch_size:
+                    await self.writer_redis_pool.sadd(epoch_batch_submissions(msg_obj.epochId), tx_hash)
+                    set_size = await self.writer_redis_pool.scard(epoch_batch_submissions(msg_obj.epochId))
+                    if int(set_size) >= int(batch_size):
+                        await self.end_batch(data_market=msg_obj.dataMarket, epoch_id=msg_obj.epochId)
+                        break
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(5)  # Wait before next attempt
