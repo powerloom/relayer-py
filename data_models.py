@@ -144,7 +144,6 @@ class BatchSubmissionRequest(BaseModel):
     """Request model for batch submission operations."""
     dataMarket: str
     batchCid: str
-    batchId: int
     epochId: int
     projectIds: List[str]
     snapshotCids: List[str]

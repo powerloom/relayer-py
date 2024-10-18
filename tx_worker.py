@@ -156,7 +156,6 @@ class TxWorker(GenericAsyncWorker):
                 priority_gas_multiplier,
                 txn_payload.dataMarket,
                 txn_payload.batchCid,
-                txn_payload.batchId,
                 txn_payload.epochId,
                 txn_payload.projectIds,
                 txn_payload.snapshotCids,
@@ -225,6 +224,22 @@ class TxWorker(GenericAsyncWorker):
         Raises:
             Exception: If the transaction fails or encounters a nonce error.
         """
+        try:
+            _ = await self._protocol_state_contract.functions.endBatchSubmissions(
+                data_market, epoch_id,
+            ).estimate_gas({'from': settings.signers[0].address})
+        except Exception as e:
+            if 'E39' in str(e):
+                self._logger.info(
+                    'End batch submission already called. Skipping...',
+                )
+                return
+            else:
+                self._logger.opt(exception=True).error(
+                    'Error estimating gas for end batch submission. Error: {}',
+                    e,
+                )
+                raise e
         _nonce = await self._return_and_increment_nonce()
         protocol_state_contract = await self.get_protocol_state_contract(settings.protocol_state_address)
         self._logger.trace(f'nonce: {_nonce}')
