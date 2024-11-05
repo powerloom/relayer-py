@@ -135,6 +135,7 @@ class SignRequest(BaseModel):
 
 class BatchSizeRequest(BaseModel):
     """Request model for batch size operations."""
+    dataMarketAddress: str
     batchSize: int
     epochId: int
     authToken: str
@@ -142,7 +143,7 @@ class BatchSizeRequest(BaseModel):
 
 class BatchSubmissionRequest(BaseModel):
     """Request model for batch submission operations."""
-    dataMarket: str
+    dataMarketAddress: str
     batchCid: str
     epochId: int
     projectIds: List[str]
