@@ -154,7 +154,7 @@ class TxWorker(GenericAsyncWorker):
                 _nonce,
                 self._last_gas_price,
                 priority_gas_multiplier,
-                txn_payload.dataMarket,
+                txn_payload.dataMarketAddress,
                 txn_payload.batchCid,
                 txn_payload.epochId,
                 txn_payload.projectIds,

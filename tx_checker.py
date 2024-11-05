@@ -96,7 +96,7 @@ class TxChecker(multiprocessing.Process):
             try:
                 # Estimate gas for the transaction
                 _ = await self._protocol_state_contract.functions.submitSubmissionBatch(
-                    msg_obj.dataMarket, msg_obj.batchCid, msg_obj.epochId,
+                    msg_obj.dataMarketAddress, msg_obj.batchCid, msg_obj.epochId,
                     msg_obj.projectIds, msg_obj.snapshotCids, msg_obj.finalizedCidsRootHash,
                 ).estimate_gas({'from': settings.signers[0].address})
 
