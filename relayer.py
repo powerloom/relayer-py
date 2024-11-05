@@ -179,6 +179,7 @@ async def submit_batch_size(
             status_code=401,
             content={'message': 'Unauthorized'},
         )
+    service_logger.info(f'Received batch size request for {req_parsed.dataMarketAddress} with batch size {req_parsed.batchSize} for epoch {req_parsed.epochId}')
     try:
         # Store batch size in Redis
         await request.app.state.writer_redis_pool.set(
@@ -217,6 +218,7 @@ async def submit_batch_submission(
     Returns:
         JSONResponse: A JSON response indicating success or failure.
     """
+    service_logger.info(f'Received batch submission request for {req_parsed.dataMarketAddress} with batch cid {req_parsed.batchCid} for epoch {req_parsed.epochId}')
     if req_parsed.authToken != settings.auth_token:
         return JSONResponse(
             status_code=401,
