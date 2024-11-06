@@ -137,17 +137,17 @@ class BatchSizeRequest(BaseModel):
     """Request model for batch size operations."""
     dataMarketAddress: str
     batchSize: int
-    epochId: int
+    epochID: int
     authToken: str
 
 
 class BatchSubmissionRequest(BaseModel):
     """Request model for batch submission operations."""
     dataMarketAddress: str
-    batchCid: str
-    epochId: int
-    projectIds: List[str]
-    snapshotCids: List[str]
+    batchCID: str
+    epochID: int
+    projectIDs: List[str]
+    snapshotCIDs: List[str]
     finalizedCidsRootHash: str
     authToken: str
 
