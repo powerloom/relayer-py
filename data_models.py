@@ -148,7 +148,7 @@ class BatchSubmissionRequest(BaseModel):
     epochID: int
     projectIDs: List[str]
     snapshotCIDs: List[str]
-    finalizedCidsRootHash: str
+    finalizedCIDsRootHash: str
     authToken: str
 
 

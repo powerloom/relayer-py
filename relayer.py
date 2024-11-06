@@ -183,7 +183,7 @@ async def submit_batch_size(
     try:
         # Store batch size in Redis
         await request.app.state.writer_redis_pool.set(
-            epoch_batch_size(req_parsed.epochId),
+            epoch_batch_size(req_parsed.epochID),
             req_parsed.batchSize,
         )
         return JSONResponse(
@@ -225,9 +225,9 @@ async def submit_batch_submission(
         )
     service_logger.debug(
         'Received batch submission request for epoch {} and data market {} and batch cid {}',
-        req_parsed.epochId,
+        req_parsed.epochID,
         req_parsed.dataMarketAddress,
-        req_parsed.batchCid,
+        req_parsed.batchCID,
     )
     try:
         await submit_batch(request, req_parsed)

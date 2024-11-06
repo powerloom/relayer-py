@@ -155,11 +155,11 @@ class TxWorker(GenericAsyncWorker):
                 self._last_gas_price,
                 priority_gas_multiplier,
                 txn_payload.dataMarketAddress,
-                txn_payload.batchCid,
-                txn_payload.epochId,
-                txn_payload.projectIds,
-                txn_payload.snapshotCids,
-                txn_payload.finalizedCidsRootHash,
+                txn_payload.batchCID,
+                txn_payload.epochID,
+                txn_payload.projectIDs,
+                txn_payload.snapshotCIDs,
+                txn_payload.finalizedCIDsRootHash,
             )
 
             self._logger.info(
@@ -326,12 +326,12 @@ class TxWorker(GenericAsyncWorker):
             # Implement a more robust checking mechanism
             max_attempts = 3
             for attempt in range(max_attempts):
-                batch_size = await self.writer_redis_pool.get(epoch_batch_size(msg_obj.epochId))
+                batch_size = await self.writer_redis_pool.get(epoch_batch_size(msg_obj.epochID))
                 if batch_size:
-                    await self.writer_redis_pool.sadd(epoch_batch_submissions(msg_obj.epochId), tx_hash)
-                    set_size = await self.writer_redis_pool.scard(epoch_batch_submissions(msg_obj.epochId))
+                    await self.writer_redis_pool.sadd(epoch_batch_submissions(msg_obj.epochID), tx_hash)
+                    set_size = await self.writer_redis_pool.scard(epoch_batch_submissions(msg_obj.epochID))
                     if int(set_size) >= int(batch_size):
-                        await self.end_batch(data_market=msg_obj.dataMarket, epoch_id=msg_obj.epochId)
+                        await self.end_batch(data_market=msg_obj.dataMarketAddress, epoch_id=msg_obj.epochID)
                         break
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(5)  # Wait before next attempt
