@@ -75,10 +75,6 @@ async def request_middleware(
     with service_logger.contextualize(request_id=request_id):
         service_logger.info('Request started for: {}', request.url)
         try:
-            service_logger.info(f'Request body: {await request.body()}')
-        except Exception as e:
-            pass
-        try:
             response = await call_next(request)
         except Exception as ex:
             service_logger.opt(exception=True).error(f'Request failed: {ex}')
@@ -183,6 +179,7 @@ async def submit_batch_size(
             status_code=401,
             content={'message': 'Unauthorized'},
         )
+    service_logger.debug('Received batch size request: {}', req_parsed)
     try:
         # Store batch size in Redis
         await request.app.state.writer_redis_pool.set(
@@ -226,6 +223,12 @@ async def submit_batch_submission(
             status_code=401,
             content={'message': 'Unauthorized'},
         )
+    service_logger.debug(
+        'Received batch submission request for epoch {} and data market {} and batch cid {}',
+        req_parsed.epochId,
+        req_parsed.dataMarketAddress,
+        req_parsed.batchCid,
+    )
     try:
         await submit_batch(request, req_parsed)
         return JSONResponse(
