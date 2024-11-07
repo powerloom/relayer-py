@@ -1,3 +1,5 @@
+rm -rf logs/*
+
 docker build -t powerloom-relayer .
 
 if ! [ -x "$(command -v docker-compose)" ]; then

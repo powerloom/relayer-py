@@ -1,26 +1,84 @@
-"""
-This module configures and sets up a custom logger using the Loguru library.
-
-It defines a custom log format and configures log handlers for different output streams
-and log levels.
-"""
 import sys
+from functools import lru_cache
 
 from loguru import logger
 
-# Define a custom log format
-# {extra} field can be used to pass extra parameters to the logger using .bind()
-FORMAT = '{time:MMMM D, YYYY > HH:mm:ss!UTC} | {level} | {message}| {extra}'
+# Format string for log messages
+FORMAT = '{time:MMMM D, YYYY > HH:mm:ss!UTC} | {level} | Message: {message} | {extra}'
 
-# Remove the default handler
-logger.remove(0)
 
-# Add custom handlers for different output streams and log levels
-# Add a handler for stdout to capture DEBUG and INFO level logs
-logger.add(sys.stdout, level='DEBUG', format=FORMAT)
+def create_level_filter(level):
+    """
+    Create a filter function for a specific log level.
+    """
+    return lambda record: record['level'].name == level
 
-# Add a handler for stderr to capture WARNING level logs
-logger.add(sys.stderr, level='WARNING', format=FORMAT)
 
-# Add another handler for stderr to capture ERROR and CRITICAL level logs
-logger.add(sys.stderr, level='ERROR', format=FORMAT)
+@lru_cache(maxsize=None)
+def get_logger():
+    """
+    Configure and return the logger instance.
+    This function is cached, so it will only configure the logger once.
+    """
+    # Force remove all handlers
+    new_logger = logger.bind()
+    new_logger.configure(handlers=[])
+    new_logger.remove()
+    # Configure file logging
+    log_levels = [
+        ('trace', 'TRACE'),
+        ('debug', 'DEBUG'),
+        ('info', 'INFO'),
+        ('success', 'SUCCESS'),
+        ('warning', 'WARNING'),
+        ('error', 'ERROR'),
+        ('critical', 'CRITICAL'),
+    ]
+
+    for file_name, level in log_levels:
+        logger.add(
+            f'logs/{file_name}.log',
+            level=level,
+            format=FORMAT,
+            filter=create_level_filter(level),
+            rotation='6 hours',
+            compression='tar.xz',
+            retention='2 days',
+        )
+
+    logger.add(
+        sys.stdout, level='TRACE', format=FORMAT,
+        filter=create_level_filter('TRACE'),
+    )
+    logger.add(
+        sys.stdout, level='DEBUG', format=FORMAT,
+        filter=create_level_filter('DEBUG'),
+    )
+
+    logger.add(
+        sys.stdout, level='INFO', format=FORMAT,
+        filter=create_level_filter('INFO'),
+    )
+    logger.add(
+        sys.stdout, level='SUCCESS', format=FORMAT,
+        filter=create_level_filter('SUCCESS'),
+    )
+
+    logger.add(
+        sys.stderr, level='WARNING', format=FORMAT,
+        filter=create_level_filter('WARNING'),
+    )
+    logger.add(
+        sys.stderr, level='ERROR', format=FORMAT,
+        filter=create_level_filter('ERROR'),
+    )
+    logger.add(
+        sys.stderr, level='CRITICAL', format=FORMAT,
+        filter=create_level_filter('CRITICAL'),
+    )
+
+    return new_logger
+
+
+# Usage
+default_logger = get_logger()

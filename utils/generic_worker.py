@@ -1,6 +1,7 @@
 import asyncio
 import json
 import multiprocessing
+import os
 import resource
 from functools import partial
 from signal import SIGINT
@@ -9,7 +10,6 @@ from signal import SIGQUIT
 from signal import SIGTERM
 from typing import Any
 from typing import Dict
-from typing import List
 from uuid import uuid4
 
 import aiorwlock
@@ -76,7 +76,7 @@ class GenericAsyncWorker(multiprocessing.Process):
     _abi: Dict[str, Any]
     _protocol_state_contract: Any
 
-    def __init__(self, name, worker_idx, **kwargs):
+    def __init__(self, name, **kwargs):
         """
         Initialize a GenericAsyncWorker instance.
 
@@ -94,7 +94,7 @@ class GenericAsyncWorker(multiprocessing.Process):
         self._qos = 1
         self._rate_limiting_lua_scripts = None
         self.protocol_state_contract_address = settings.protocol_state_address
-        self._worker_idx = worker_idx
+        self._worker_idx = os.environ['NODE_APP_INSTANCE']
         self._initialized = False
         self.protocol_state_contract_instance_mapping = {}
 
@@ -247,6 +247,9 @@ class GenericAsyncWorker(multiprocessing.Process):
         starts the RabbitMQ consumer, and runs the event loop.
         """
         self._logger = logger.bind(module=self.name)
+        self._logger.info(
+            f'Starting worker {self.name} {self._worker_idx}...',
+        )
 
         # Set resource limits
         soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)

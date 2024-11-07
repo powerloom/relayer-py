@@ -13,6 +13,8 @@ services:
       - "rabbitmq"
     expose:
       - 8080
+    volumes:
+      - ./logs:/logs
     ports:
       - 8080:8080
     command:

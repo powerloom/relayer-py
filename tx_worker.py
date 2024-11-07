@@ -10,6 +10,7 @@ from tenacity import wait_random_exponential
 from web3.exceptions import TransactionNotFound
 
 from data_models import BatchSubmissionRequest
+from helpers.redis_keys import end_batch_submission_called
 from helpers.redis_keys import epoch_batch_size
 from helpers.redis_keys import epoch_batch_submissions
 from init_rabbitmq import get_tx_send_q_routing_key
@@ -60,7 +61,7 @@ class TxWorker(GenericAsyncWorker):
     Transaction Worker class for handling blockchain transactions.
     """
 
-    def __init__(self, name, worker_idx, **kwargs):
+    def __init__(self, name, **kwargs):
         """
         Initialize the TxWorker.
 
@@ -71,7 +72,7 @@ class TxWorker(GenericAsyncWorker):
         """
         self._q, self._rmq_routing = get_tx_send_q_routing_key()
         super(TxWorker, self).__init__(
-            name=name, worker_idx=worker_idx, **kwargs,
+            name=name, **kwargs,
         )
 
     @aiorwlock_aqcuire_release
@@ -240,6 +241,13 @@ class TxWorker(GenericAsyncWorker):
                     e,
                 )
                 raise e
+
+        # check if end batch submission already called
+        if await self.reader_redis_pool.get(end_batch_submission_called(data_market, epoch_id)):
+            self._logger.info(
+                f'End batch submission already called for epoch {epoch_id}. Skipping...',
+            )
+            return
         _nonce = await self._return_and_increment_nonce()
         protocol_state_contract = await self.get_protocol_state_contract(settings.protocol_state_address)
         self._logger.trace(f'nonce: {_nonce}')
@@ -286,6 +294,7 @@ class TxWorker(GenericAsyncWorker):
                 await self._reset_nonce()
                 raise e
         else:
+            await self.writer_redis_pool.set(end_batch_submission_called(data_market, epoch_id), True, ex=3600)
             return tx_hash
 
     async def _on_rabbitmq_message(self, message: IncomingMessage):

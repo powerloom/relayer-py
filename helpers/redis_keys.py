@@ -48,3 +48,11 @@ def timeslot_preference(slot_id):
         str: A Redis key string for time slot preferences.
     """
     return f'timeslot_preference:{slot_id}'
+
+
+def end_batch_submission_called(data_market, epoch_id):
+    """
+    Generate a Redis key for storing whether the end batch submission has been called for a specific epoch
+    and data market.
+    """
+    return f'end_batch_submission_called:{data_market}:{epoch_id}'
