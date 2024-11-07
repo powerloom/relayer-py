@@ -335,3 +335,8 @@ class TxWorker(GenericAsyncWorker):
                         break
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(5)  # Wait before next attempt
+
+
+if __name__ == '__main__':
+    tx_worker = TxWorker(name='tx_worker')
+    tx_worker.run()
