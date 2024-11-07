@@ -182,7 +182,10 @@ class TxWorker(GenericAsyncWorker):
             if 'baseFeePerGas' in receipt:
                 self._last_gas_price = receipt['baseFeePerGas']
             if receipt.status != 1:
-                raise Exception('Transaction failed')
+
+                raise Exception(
+                    f'Transaction {tx_hash} failed, receipt: {receipt}',
+                )
 
         except Exception as e:
             # Handle nonce errors
