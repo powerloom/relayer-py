@@ -94,7 +94,7 @@ class GenericAsyncWorker(multiprocessing.Process):
         self._qos = 1
         self._rate_limiting_lua_scripts = None
         self.protocol_state_contract_address = settings.protocol_state_address
-        self._worker_idx = os.environ['NODE_APP_INSTANCE']
+        self._worker_idx = int(os.environ['NODE_APP_INSTANCE'])
         self._initialized = False
         self.protocol_state_contract_instance_mapping = {}
 
