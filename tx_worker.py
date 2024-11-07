@@ -10,6 +10,7 @@ from tenacity import wait_random_exponential
 from web3.exceptions import TransactionNotFound
 
 from data_models import BatchSubmissionRequest
+from data_models import EndBatchRequest
 from helpers.redis_keys import end_batch_submission_called
 from helpers.redis_keys import epoch_batch_size
 from helpers.redis_keys import epoch_batch_submissions
@@ -210,7 +211,7 @@ class TxWorker(GenericAsyncWorker):
         stop=stop_after_attempt(3),
         after=txn_retry_callback,
     )
-    async def end_batch(self, data_market: str, epoch_id: int, priority_gas_multiplier: int = 0):
+    async def end_batch(self, txn_payload: EndBatchRequest, priority_gas_multiplier: int = 0):
         """
         End a batch submission on the blockchain.
 
@@ -227,7 +228,7 @@ class TxWorker(GenericAsyncWorker):
         """
         try:
             _ = await self._protocol_state_contract.functions.endBatchSubmissions(
-                data_market, epoch_id,
+                txn_payload.dataMarketAddress, txn_payload.epochID,
             ).estimate_gas({'from': settings.signers[0].address})
         except Exception as e:
             if 'E39' in str(e):
@@ -243,9 +244,9 @@ class TxWorker(GenericAsyncWorker):
                 raise e
 
         # check if end batch submission already called
-        if await self.reader_redis_pool.get(end_batch_submission_called(data_market, epoch_id)):
+        if await self.reader_redis_pool.get(end_batch_submission_called(txn_payload.dataMarketAddress, txn_payload.epochID)):
             self._logger.info(
-                f'End batch submission already called for epoch {epoch_id}. Skipping...',
+                f'End batch submission already called for epoch {txn_payload.epochID}. Skipping...',
             )
             return
         _nonce = await self._return_and_increment_nonce()
@@ -262,13 +263,13 @@ class TxWorker(GenericAsyncWorker):
                 _nonce,
                 self._last_gas_price,
                 priority_gas_multiplier,
-                data_market,
-                epoch_id,
+                txn_payload.dataMarketAddress,
+                txn_payload.epochID,
             )
 
             self._logger.info(
                 f'submitted batch end transaction with tx_hash: {tx_hash}, '
-                f'data_market: {data_market}, epoch_id: {epoch_id}',
+                f'data_market: {txn_payload.dataMarketAddress}, epoch_id: {txn_payload.epochID}',
             )
 
             # Wait for transaction receipt and update gas price
@@ -294,7 +295,7 @@ class TxWorker(GenericAsyncWorker):
                 await self._reset_nonce()
                 raise e
         else:
-            await self.writer_redis_pool.set(end_batch_submission_called(data_market, epoch_id), True, ex=3600)
+            await self.writer_redis_pool.set(end_batch_submission_called(txn_payload.dataMarketAddress, txn_payload.epochID), True, ex=3600)
             return tx_hash
 
     async def _on_rabbitmq_message(self, message: IncomingMessage):
@@ -340,7 +341,11 @@ class TxWorker(GenericAsyncWorker):
                     await self.writer_redis_pool.sadd(epoch_batch_submissions(msg_obj.epochID), tx_hash)
                     set_size = await self.writer_redis_pool.scard(epoch_batch_submissions(msg_obj.epochID))
                     if int(set_size) >= int(batch_size):
-                        await self.end_batch(data_market=msg_obj.dataMarketAddress, epoch_id=msg_obj.epochID)
+                        txn_payload = EndBatchRequest(
+                            dataMarketAddress=msg_obj.dataMarketAddress,
+                            epochID=msg_obj.epochID,
+                        )
+                        await self.end_batch(txn_payload=txn_payload)
                         break
                 if attempt < max_attempts - 1:
                     await asyncio.sleep(5)  # Wait before next attempt

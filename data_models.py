@@ -152,6 +152,12 @@ class BatchSubmissionRequest(BaseModel):
     authToken: str
 
 
+class EndBatchRequest(BaseModel):
+    """Request model for ending a batch."""
+    dataMarketAddress: str
+    epochID: int
+
+
 class WalletRegistrationRequest(BaseModel):
     """Request model for wallet registration."""
     walletAddress: str
