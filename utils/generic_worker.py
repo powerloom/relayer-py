@@ -162,7 +162,6 @@ class GenericAsyncWorker(multiprocessing.Process):
             q_obj = await channel.get_queue(
                 name=self._q,
                 ensure=False,
-                prefetch_count=self._qos,
             )
             self._logger.debug(
                 f'Consuming queue {self._q} with routing key {self._rmq_routing}...',
