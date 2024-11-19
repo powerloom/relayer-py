@@ -11,6 +11,7 @@ from web3.exceptions import TransactionNotFound
 
 from data_models import BatchSubmissionRequest
 from data_models import EndBatchRequest
+from data_models import UpdateRewardsRequest
 from helpers.redis_keys import end_batch_submission_called
 from helpers.redis_keys import epoch_batch_size
 from helpers.redis_keys import epoch_batch_submissions
@@ -214,6 +215,90 @@ class TxWorker(GenericAsyncWorker):
         stop=stop_after_attempt(3),
         after=txn_retry_callback,
     )
+    async def submit_update_rewards(self, txn_payload: UpdateRewardsRequest, priority_gas_multiplier: int = 0):
+        """
+        Submit a batch of transactions to the blockchain.
+
+        Args:
+            txn_payload (UpdateRewardsRequest): The payload containing update rewards data.
+            priority_gas_multiplier (int, optional): Gas price multiplier for priority. Defaults to 0.
+
+        Returns:
+            str: The transaction hash if successful.
+
+        Raises:
+            Exception: If the transaction fails or encounters a nonce error.
+        """
+        _nonce = await self._return_and_increment_nonce()
+        protocol_state_contract = await self.get_protocol_state_contract(settings.protocol_state_address)
+        self._logger.trace(f'nonce: {_nonce}')
+        try:
+            tx_hash = await write_transaction(
+                self._w3,
+                self._signer_account,
+                self._signer_pkey,
+                protocol_state_contract,
+                'updateRewards',
+                _nonce,
+                self._last_gas_price,
+                priority_gas_multiplier,
+                txn_payload.dataMarketAddress,
+                txn_payload.slotIds,
+                txn_payload.submissionsList,
+                txn_payload.day,
+                txn_payload.eligibleNodes,
+            )
+
+            self._logger.info(
+                f'Submitted transaction with tx_hash: {tx_hash}, payload {txn_payload}',
+            )
+
+            # Wait for transaction receipt with exponential backoff
+            receipt = None
+            for attempt in range(5):
+                try:
+                    receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30 * (2 ** attempt))
+                    break
+                except TransactionNotFound:
+                    if attempt == 4:
+                        raise
+                    await asyncio.sleep(5 * (2 ** attempt))
+
+            if 'baseFeePerGas' in receipt:
+                self._last_gas_price = receipt['baseFeePerGas']
+            if receipt.status != 1:
+
+                raise Exception(
+                    f'Transaction {tx_hash} failed, receipt: {receipt}',
+                )
+
+        except Exception as e:
+            # Handle nonce errors
+            if 'nonce too low' in str(e):
+                error = eval(str(e))
+                message = error['message']
+                next_nonce = int(message.split('next nonce ')[1].split(',')[0])
+                self._logger.info(
+                    'Nonce too low error. Next nonce: {}', next_nonce,
+                )
+                await self._reset_nonce(next_nonce)
+                raise Exception('nonce error, reset nonce')
+            else:
+                self._logger.info(
+                    'Error submitting snapshot. Retrying...',
+                )
+                await self._reset_nonce()
+                raise e
+        else:
+            return tx_hash
+
+    @retry(
+        reraise=True,
+        retry=retry_if_exception_type(Exception),
+        wait=wait_random_exponential(multiplier=1, max=10),
+        stop=stop_after_attempt(3),
+        after=txn_retry_callback,
+    )
     async def end_batch(self, txn_payload: EndBatchRequest, priority_gas_multiplier: int = 0):
         """
         End a batch submission on the blockchain.
@@ -303,55 +388,91 @@ class TxWorker(GenericAsyncWorker):
 
     async def _on_rabbitmq_message(self, message: IncomingMessage):
         """
-        Process incoming RabbitMQ messages.
+        Process incoming RabbitMQ messages and handle batch submissions and reward updates.
 
-        This method is called when a message is received from RabbitMQ.
-        It processes the message and initiates the batch submission process.
+        This method processes two types of messages:
+        1. BatchSubmissionRequest - For submitting batches of snapshots
+        2. UpdateRewardsRequest - For updating reward distributions
+
+        For BatchSubmissionRequest messages, it:
+        - Submits the batch transaction
+        - Tracks submission counts against batch size
+        - Triggers end batch when size threshold is reached
+
+        For UpdateRewardsRequest messages, it:
+        - Submits the reward update transaction directly
 
         Args:
-            message (IncomingMessage): The incoming message from RabbitMQ.
+            message (IncomingMessage): The incoming RabbitMQ message containing either a
+                BatchSubmissionRequest or UpdateRewardsRequest payload
 
         Returns:
             None
         """
+        # Acknowledge message receipt and initialize
         await message.ack()
         await self.init()
+
         try:
-            # Parse the incoming message
-            msg_obj: BatchSubmissionRequest = BatchSubmissionRequest.parse_raw(
-                message.body,
-            )
+            # Parse message payload - try BatchSubmissionRequest first, then UpdateRewardsRequest
+            try:
+                msg_obj = BatchSubmissionRequest.parse_raw(message.body)
+                self._logger.debug('Parsed message as BatchSubmissionRequest')
+            except ValidationError:
+                msg_obj = UpdateRewardsRequest.parse_raw(message.body)
+                self._logger.debug('Parsed message as UpdateRewardsRequest')
+
         except ValidationError as e:
+            # Log validation errors with message details
             self._logger.opt(exception=False).error(
                 'Bad message structure of callback processor. Error: {}, {}',
                 e, message.body,
             )
             return
         except Exception as e:
+            # Log unexpected parsing errors
             self._logger.opt(exception=False).error(
-                'Unexpected message structure of callback in processor. Error: {}',
-                e,
+                'Unexpected message structure of callback in processor. '
+                'Error: {}', e,
             )
             return
         else:
-            tx_hash = await self.submit_batch(txn_payload=msg_obj)
+            if isinstance(msg_obj, BatchSubmissionRequest):
+                # Handle batch submission request
+                tx_hash = await self.submit_batch(txn_payload=msg_obj)
 
-            # Implement a more robust checking mechanism
-            max_attempts = 3
-            for attempt in range(max_attempts):
-                batch_size = await self.writer_redis_pool.get(epoch_batch_size(msg_obj.epochID))
-                if batch_size:
-                    await self.writer_redis_pool.sadd(epoch_batch_submissions(msg_obj.epochID), tx_hash)
-                    set_size = await self.writer_redis_pool.scard(epoch_batch_submissions(msg_obj.epochID))
-                    if int(set_size) >= int(batch_size):
-                        txn_payload = EndBatchRequest(
-                            dataMarketAddress=msg_obj.dataMarketAddress,
-                            epochID=msg_obj.epochID,
+                # Check if batch size threshold is reached and end batch if needed
+                max_attempts = 3
+                for attempt in range(max_attempts):
+                    # Get configured batch size for this epoch
+                    batch_size = await self.writer_redis_pool.get(
+                        epoch_batch_size(msg_obj.epochID),
+                    )
+                    if batch_size:
+                        # Track this submission
+                        await self.writer_redis_pool.sadd(
+                            epoch_batch_submissions(msg_obj.epochID),
+                            tx_hash,
                         )
-                        await self.end_batch(txn_payload=txn_payload)
-                        break
-                if attempt < max_attempts - 1:
-                    await asyncio.sleep(5)  # Wait before next attempt
+                        # Get current submission count
+                        set_size = await self.writer_redis_pool.scard(
+                            epoch_batch_submissions(msg_obj.epochID),
+                        )
+                        # End batch if size threshold reached
+                        if int(set_size) >= int(batch_size):
+                            txn_payload = EndBatchRequest(
+                                dataMarketAddress=msg_obj.dataMarketAddress,
+                                epochID=msg_obj.epochID,
+                            )
+                            await self.end_batch(txn_payload=txn_payload)
+                            break
+                    if attempt < max_attempts - 1:
+                        # Wait before retrying batch size check
+                        await asyncio.sleep(5)
+
+            else:
+                # Handle reward update request
+                tx_hash = await self.submit_update_rewards(txn_payload=msg_obj)
 
 
 if __name__ == '__main__':

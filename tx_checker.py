@@ -20,6 +20,7 @@ from web3 import AsyncWeb3
 from web3 import Web3
 
 from data_models import BatchSubmissionRequest
+from data_models import UpdateRewardsRequest
 from init_rabbitmq import get_core_exchange_name
 from init_rabbitmq import get_tx_check_q_routing_key
 from init_rabbitmq import get_tx_send_q_routing_key
@@ -63,60 +64,97 @@ class TxChecker(multiprocessing.Process):
         """
         Process incoming RabbitMQ messages.
 
-        This method is called when a message is received from RabbitMQ.
-        It validates the message, estimates gas for the transaction,
-        and forwards the message to the transaction sender queue if successful.
+        This method handles two types of messages:
+        1. BatchSubmissionRequest - For submitting batches of snapshots
+        2. UpdateRewardsRequest - For updating reward distributions
+
+        For BatchSubmissionRequest messages, it:
+        - Validates the message format
+        - Estimates gas for the submitSubmissionBatch transaction
+        - Forwards valid messages to the transaction sender queue
+
+        For UpdateRewardsRequest messages, it:
+        - Validates the message format
+        - Forwards directly to the transaction sender queue
 
         Args:
-            message (IncomingMessage): The incoming message from RabbitMQ.
+            message (IncomingMessage): The incoming RabbitMQ message containing either a
+                BatchSubmissionRequest or UpdateRewardsRequest payload
 
         Returns:
             None
         """
+        # Acknowledge message receipt
         await message.ack()
         await self.init()
+
         try:
-            # Parse the incoming message
-            msg_obj: BatchSubmissionRequest = BatchSubmissionRequest.parse_raw(
-                message.body,
-            )
+            # First try parsing as BatchSubmissionRequest, then UpdateRewardsRequest
+            try:
+                msg_obj = BatchSubmissionRequest.parse_raw(message.body)
+                self._logger.debug('Parsed message as BatchSubmissionRequest')
+            except ValidationError:
+                msg_obj = UpdateRewardsRequest.parse_raw(message.body)
+                self._logger.debug('Parsed message as UpdateRewardsRequest')
+
         except ValidationError as e:
+            # Log validation errors with message details
             self._logger.opt(exception=False).error(
                 'Bad message structure of callback processor. Error: {}, {}',
                 e, message.body,
             )
             return
         except Exception as e:
+            # Log unexpected parsing errors
             self._logger.opt(exception=False).error(
-                'Unexpected message structure of callback in processor. Error: {}',
-                e,
+                'Unexpected message structure of callback in processor. '
+                'Error: {}', e,
             )
             return
         else:
-            try:
-                # Estimate gas for the transaction
-                _ = await self._protocol_state_contract.functions.submitSubmissionBatch(
-                    msg_obj.dataMarketAddress, msg_obj.batchCID, msg_obj.epochID,
-                    list(msg_obj.projectIDs), list(
-                        msg_obj.snapshotCIDs,
-                    ), msg_obj.finalizedCIDsRootHash,
-                ).estimate_gas({'from': settings.signers[0].address})
+            # Handle BatchSubmissionRequest messages
+            if isinstance(msg_obj, BatchSubmissionRequest):
+                try:
+                    # Estimate gas for submitSubmissionBatch transaction
+                    _ = await self._protocol_state_contract.functions.\
+                        submitSubmissionBatch(
+                            msg_obj.dataMarketAddress,
+                            msg_obj.batchCID,
+                            msg_obj.epochID,
+                            list(msg_obj.projectIDs),
+                            list(msg_obj.snapshotCIDs),
+                            msg_obj.finalizedCIDsRootHash,
+                        ).estimate_gas({'from': settings.signers[0].address})
 
-                self._logger.info('Processing message: {}', msg_obj)
+                    self._logger.info('Processing message: {}', msg_obj)
 
-                # Forward the message to the transaction sender queue
+                    # Forward to transaction sender queue after successful gas estimate
+                    async with self._rmq_channel_pool.acquire() as channel:
+                        exchange = await channel.get_exchange(
+                            name=get_core_exchange_name(),
+                        )
+                        queue_name, routing_key = get_tx_send_q_routing_key()
+                        await exchange.publish(
+                            routing_key=routing_key,
+                            message=Message(msg_obj.json().encode('utf-8')),
+                        )
+                except Exception as e:
+                    # Log any errors during gas estimation or message forwarding
+                    self._logger.opt(exception=True).error(
+                        'Error processing message: {}, Error: {}',
+                        msg_obj, e,
+                    )
+            else:
+                # Handle UpdateRewardsRequest messages - forward directly
                 async with self._rmq_channel_pool.acquire() as channel:
-                    exchange = await channel.get_exchange(name=get_core_exchange_name())
+                    exchange = await channel.get_exchange(
+                        name=get_core_exchange_name(),
+                    )
                     queue_name, routing_key = get_tx_send_q_routing_key()
                     await exchange.publish(
                         routing_key=routing_key,
                         message=Message(msg_obj.json().encode('utf-8')),
                     )
-            except Exception as e:
-                self._logger.opt(exception=True).error(
-                    'Error processing message: {}, Error: {}',
-                    msg_obj, e,
-                )
 
     def _signal_handler(self, signum, frame):
         """

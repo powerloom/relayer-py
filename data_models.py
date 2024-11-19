@@ -152,6 +152,16 @@ class BatchSubmissionRequest(BaseModel):
     authToken: str
 
 
+class UpdateRewardsRequest(BaseModel):
+    """Request model for update rewards operations."""
+    dataMarketAddress: str
+    slotIds: List[int]
+    submissionsList: List[int]
+    day: int
+    eligibleNodes: int
+    authToken: str
+
+
 class EndBatchRequest(BaseModel):
     """Request model for ending a batch."""
     dataMarketAddress: str
