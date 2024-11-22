@@ -126,8 +126,6 @@ class TxChecker(multiprocessing.Process):
                             msg_obj.finalizedCIDsRootHash,
                         ).estimate_gas({'from': settings.signers[0].address})
 
-                    self._logger.info('Processing message: {}', msg_obj)
-
                     # Forward to transaction sender queue after successful gas estimate
                     async with self._rmq_channel_pool.acquire() as channel:
                         exchange = await channel.get_exchange(
