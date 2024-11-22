@@ -167,7 +167,7 @@ class TxWorker(GenericAsyncWorker):
             )
 
             self._logger.info(
-                f'Submitted transaction with tx_hash: {tx_hash}, payload {txn_payload}',
+                f'Submitted transaction with tx_hash: {tx_hash}',
             )
 
             # Wait for transaction receipt with exponential backoff
@@ -251,7 +251,7 @@ class TxWorker(GenericAsyncWorker):
             )
 
             self._logger.info(
-                f'Submitted transaction with tx_hash: {tx_hash}, payload {txn_payload}',
+                f'Submitted transaction with tx_hash: {tx_hash}',
             )
 
             # Wait for transaction receipt with exponential backoff
