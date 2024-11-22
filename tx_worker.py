@@ -1,4 +1,5 @@
 import asyncio
+import random
 
 import tenacity
 from aio_pika import IncomingMessage
@@ -314,6 +315,8 @@ class TxWorker(GenericAsyncWorker):
         Raises:
             Exception: If the transaction fails or encounters a nonce error.
         """
+        # randomly wait 2-20 seconds
+        await asyncio.sleep(random.randint(2, 20))
         try:
             _ = await self._protocol_state_contract.functions.endBatchSubmissions(
                 txn_payload.dataMarketAddress, txn_payload.epochID,
