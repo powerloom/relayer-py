@@ -444,35 +444,27 @@ class TxWorker(GenericAsyncWorker):
                 # Handle batch submission request
                 tx_hash = await self.submit_batch(txn_payload=msg_obj)
 
-                # Check if batch size threshold is reached and end batch if needed
-                max_attempts = 3
-                for attempt in range(max_attempts):
-                    # Get configured batch size for this epoch
-                    batch_size = await self.writer_redis_pool.get(
-                        epoch_batch_size(msg_obj.epochID),
+                # Get configured batch size for this epoch
+                batch_size = await self.writer_redis_pool.get(
+                    epoch_batch_size(msg_obj.epochID),
+                )
+                if batch_size:
+                    # Track this submission
+                    await self.writer_redis_pool.sadd(
+                        epoch_batch_submissions(msg_obj.epochID),
+                        tx_hash,
                     )
-                    if batch_size:
-                        # Track this submission
-                        await self.writer_redis_pool.sadd(
-                            epoch_batch_submissions(msg_obj.epochID),
-                            tx_hash,
+                    # Get current submission count
+                    set_size = await self.writer_redis_pool.scard(
+                        epoch_batch_submissions(msg_obj.epochID),
+                    )
+                    # End batch if size threshold reached
+                    if int(set_size) >= int(batch_size):
+                        txn_payload = EndBatchRequest(
+                            dataMarketAddress=msg_obj.dataMarketAddress,
+                            epochID=msg_obj.epochID,
                         )
-                        # Get current submission count
-                        set_size = await self.writer_redis_pool.scard(
-                            epoch_batch_submissions(msg_obj.epochID),
-                        )
-                        # End batch if size threshold reached
-                        if int(set_size) >= int(batch_size):
-                            txn_payload = EndBatchRequest(
-                                dataMarketAddress=msg_obj.dataMarketAddress,
-                                epochID=msg_obj.epochID,
-                            )
-                            await self.end_batch(txn_payload=txn_payload)
-                            break
-                    if attempt < max_attempts - 1:
-                        # Wait before retrying batch size check
-                        await asyncio.sleep(5)
-
+                        await self.end_batch(txn_payload=txn_payload)
             else:
                 # Handle reward update request
                 tx_hash = await self.submit_update_rewards(txn_payload=msg_obj)
