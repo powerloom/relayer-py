@@ -39,8 +39,6 @@ const appConfigs = [
   }),
   createWorkerConfig("tx_worker", "tx_worker",
     signers.length),
-  createWorkerConfig("tx_checker", "tx_checker",
-    signers.length),
 ];
 
 // Filter out null configurations (zero count services)

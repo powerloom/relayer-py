@@ -22,7 +22,7 @@ from data_models import BatchSubmissionRequest
 from data_models import UpdateRewardsRequest
 from helpers.redis_keys import epoch_batch_size
 from init_rabbitmq import get_core_exchange_name
-from init_rabbitmq import get_tx_check_q_routing_key
+from init_rabbitmq import get_tx_send_q_routing_key
 from settings.conf import settings
 from utils.default_logger import logger
 from utils.helpers import get_rabbitmq_channel
@@ -149,7 +149,7 @@ async def submit_batch(
     """
     async with request.app.state.rmq_channel_pool.acquire() as channel:
         exchange = await channel.get_exchange(name=get_core_exchange_name())
-        queue_name, routing_key = get_tx_check_q_routing_key()
+        queue_name, routing_key = get_tx_send_q_routing_key()
         await exchange.publish(
             routing_key=routing_key,
             message=Message(batch_payload.json().encode('utf-8')),
@@ -186,7 +186,7 @@ async def submit_update_rewards(
         exchange = await channel.get_exchange(name=get_core_exchange_name())
 
         # Get queue name and routing key for transaction checking queue
-        queue_name, routing_key = get_tx_check_q_routing_key()
+        queue_name, routing_key = get_tx_send_q_routing_key()
 
         # Publish the encoded payload to the exchange
         await exchange.publish(

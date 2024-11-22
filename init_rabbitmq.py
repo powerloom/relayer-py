@@ -53,18 +53,6 @@ def get_tx_send_q_routing_key() -> Tuple[str, str]:
     return queue_name, routing_key
 
 
-def get_tx_check_q_routing_key() -> Tuple[str, str]:
-    """
-    Get the queue name and routing key for transaction checking.
-
-    Returns:
-        Tuple[str, str]: A tuple containing the queue name and routing key.
-    """
-    queue_name = 'txCheckQueue'
-    routing_key = 'txcheck'
-    return queue_name, routing_key
-
-
 def init_queue(
     ch: pika.adapters.blocking_connection.BlockingChannel,
     queue_name: str,
@@ -125,15 +113,6 @@ def init_exchanges_queues():
 
     # Initialize the transaction send queue
     queue_name, routing_key = get_tx_send_q_routing_key()
-    init_queue(
-        channel,
-        exchange_name=exchange_name,
-        queue_name=queue_name,
-        routing_key=routing_key,
-    )
-
-    # Initialize the transaction check queue
-    queue_name, routing_key = get_tx_check_q_routing_key()
     init_queue(
         channel,
         exchange_name=exchange_name,

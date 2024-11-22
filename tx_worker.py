@@ -149,6 +149,17 @@ class TxWorker(GenericAsyncWorker):
         protocol_state_contract = await self.get_protocol_state_contract(settings.protocol_state_address)
         self._logger.trace(f'nonce: {_nonce}')
         try:
+            # Estimate gas for submitSubmissionBatch transaction
+            _ = await self._protocol_state_contract.functions.\
+                submitSubmissionBatch(
+                    txn_payload.dataMarketAddress,
+                    txn_payload.batchCID,
+                    txn_payload.epochID,
+                    list(txn_payload.projectIDs),
+                    list(txn_payload.snapshotCIDs),
+                    txn_payload.finalizedCIDsRootHash,
+                ).estimate_gas({'from': settings.signers[0].address})
+
             tx_hash = await write_transaction(
                 self._w3,
                 self._signer_account,
@@ -190,8 +201,12 @@ class TxWorker(GenericAsyncWorker):
                 )
 
         except Exception as e:
-            # Handle nonce errors
-            if 'nonce too low' in str(e):
+            if 'E25' in str(e):
+                self._logger.info(
+                    'Snapshot batch already submitted. Skipping...',
+                )
+                return
+            elif 'nonce too low' in str(e):
                 error = eval(str(e))
                 message = error['message']
                 next_nonce = int(message.split('next nonce ')[1].split(',')[0])
@@ -234,6 +249,7 @@ class TxWorker(GenericAsyncWorker):
         protocol_state_contract = await self.get_protocol_state_contract(settings.protocol_state_address)
         self._logger.trace(f'nonce: {_nonce}')
         try:
+
             tx_hash = await write_transaction(
                 self._w3,
                 self._signer_account,
