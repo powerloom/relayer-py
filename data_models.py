@@ -155,7 +155,7 @@ class BatchSubmissionRequest(BaseModel):
 class UpdateRewardsRequest(BaseModel):
     """Request model for update rewards operations."""
     dataMarketAddress: str
-    slotIds: List[int]
+    slotIDs: List[int]
     submissionsList: List[int]
     day: int
     eligibleNodes: int

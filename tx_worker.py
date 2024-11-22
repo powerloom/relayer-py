@@ -244,7 +244,7 @@ class TxWorker(GenericAsyncWorker):
                 self._last_gas_price,
                 priority_gas_multiplier,
                 txn_payload.dataMarketAddress,
-                txn_payload.slotIds,
+                txn_payload.slotIDs,
                 txn_payload.submissionsList,
                 txn_payload.day,
                 txn_payload.eligibleNodes,
