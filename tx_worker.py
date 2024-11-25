@@ -1,146 +1,491 @@
 import asyncio
+import random
+
 import tenacity
-import sha3
 from aio_pika import IncomingMessage
-from eip712_structs import EIP712Struct
-from eip712_structs import String
-from eip712_structs import Uint
 from pydantic import ValidationError
 from tenacity import retry
 from tenacity import retry_if_exception_type
 from tenacity import stop_after_attempt
 from tenacity import wait_random_exponential
-from data_models import TxnPayload
+from web3.exceptions import TransactionNotFound
+
+from data_models import BatchSubmissionRequest
+from data_models import EndBatchRequest
+from data_models import UpdateRewardsRequest
+from helpers.redis_keys import end_batch_submission_called
+from helpers.redis_keys import epoch_batch_size
+from helpers.redis_keys import epoch_batch_submissions
 from init_rabbitmq import get_tx_send_q_routing_key
+from settings.conf import settings
 from utils.default_logger import logger
 from utils.generic_worker import GenericAsyncWorker
 from utils.helpers import aiorwlock_aqcuire_release
 from utils.transaction_utils import write_transaction
 
 
-def keccak_hash(x):
-    return sha3.keccak_256(x).digest()
+def txn_retry_callback(retry_state: tenacity.RetryCallState):
+    """
+    Callback function for transaction retry attempts.
 
+    Args:
+        retry_state (tenacity.RetryCallState): The current state of the retry.
 
-def teancity_retry_callback(retry_state: tenacity.RetryCallState):
+    Returns:
+        None
+    """
     if retry_state.attempt_number >= 3:
-        # TODO: figure out how to access the retried functions state since retry_state.args returns the self object in a single tuple
-        # logger.error('Txn signing worker for payload {retry_state.args[1]} failed after 3 attempts')
-        logger.error('Txn signing worker failed after 3 attempts')
+        logger.error(
+            'Submission worker failed after 3 attempts | Txn payload: {}',
+            retry_state.kwargs['txn_payload'],
+        )
     else:
-        logger.warning('Tx signing worker attempt number {retry_state.attempt_number} result {retry_state.outcome}')
-
-class Request(EIP712Struct):
-    slotId = Uint()
-    deadline = Uint()
-    snapshotCid = String()
-    epochId = Uint()
-    projectId = String()
+        if retry_state.outcome.failed:
+            # Use priority gas if not already set
+            if 'priority_gas_multiplier' not in retry_state.kwargs:
+                retry_state.kwargs['priority_gas_multiplier'] = 1
+            retry_state.kwargs['priority_gas_multiplier'] += 1
+            logger.info(
+                'Txn failed, retrying with priority gas multiplier {} | '
+                'Txn payload: {}',
+                retry_state.kwargs['priority_gas_multiplier'],
+                retry_state.kwargs['txn_payload'],
+            )
+        logger.warning(
+            'Tx signing attempt number {} result {} | Txn payload: {}',
+            retry_state.attempt_number,
+            retry_state.outcome,
+            retry_state.kwargs['txn_payload'],
+        )
 
 
 class TxWorker(GenericAsyncWorker):
-    def __init__(self, name, worker_idx, **kwargs):
+    """
+    Transaction Worker class for handling blockchain transactions.
+    """
+
+    def __init__(self, name, **kwargs):
         """
-        Initializes a TxWorker object.
+        Initialize the TxWorker.
 
         Args:
             name (str): The name of the worker.
-            **kwargs: Additional keyword arguments to be passed to the AsyncWorker constructor.
+            worker_idx (int): The index of the worker.
+            **kwargs: Additional keyword arguments for the GenericAsyncWorker.
         """
         self._q, self._rmq_routing = get_tx_send_q_routing_key()
         super(TxWorker, self).__init__(
-            name=name, worker_idx=worker_idx, **kwargs,
+            name=name, **kwargs,
         )
 
-    # submitSnapshot
     @aiorwlock_aqcuire_release
+    async def _return_and_increment_nonce(self):
+        """
+        Return the current nonce and increment it for the next transaction.
+
+        Returns:
+            int: The current nonce before incrementing.
+        """
+        nonce = self._signer_nonce
+        self._signer_nonce += 1
+        self._logger.info(
+            'Using signer {} for submission task. Incremented nonce {}',
+            self._signer_account, self._signer_nonce,
+        )
+        return nonce
+
+    @aiorwlock_aqcuire_release
+    async def _reset_nonce(self, value: int = 0):
+        """
+        Reset the nonce to a specific value or fetch the correct nonce from the blockchain.
+
+        Args:
+            value (int, optional): The value to reset the nonce to. Defaults to 0.
+        """
+        if value > 0:
+            self._signer_nonce = value
+            self._logger.info(
+                'Using signer {} for submission task. Reset nonce to {}',
+                self._signer_account, self._signer_nonce,
+            )
+        else:
+            correct_nonce = await self._w3.eth.get_transaction_count(
+                self._signer_account,
+            )
+            if correct_nonce and isinstance(correct_nonce, int):
+                self._signer_nonce = correct_nonce
+                self._logger.info(
+                    'Using signer {} for submission task. Reset nonce to {}',
+                    self._signer_account, self._signer_nonce,
+                )
+            else:
+                self._logger.error(
+                    'Using signer {} for submission task. Could not reset nonce',
+                    self._signer_account,
+                )
+
     @retry(
         reraise=True,
         retry=retry_if_exception_type(Exception),
         wait=wait_random_exponential(multiplier=1, max=10),
         stop=stop_after_attempt(3),
-        after=teancity_retry_callback,
+        after=txn_retry_callback,
     )
-    async def submit_snapshot(self, txn_payload: TxnPayload):
+    async def submit_batch(self, txn_payload: BatchSubmissionRequest, priority_gas_multiplier: int = 0):
         """
-        Submit Snapshot
+        Submit a batch of transactions to the blockchain.
+
+        Args:
+            txn_payload (BatchSubmissionRequest): The payload containing batch submission data.
+            priority_gas_multiplier (int, optional): Gas price multiplier for priority. Defaults to 0.
+
+        Returns:
+            str: The transaction hash if successful.
+
+        Raises:
+            Exception: If the transaction fails or encounters a nonce error.
         """
-        # ideally this should not be necessary given that async code can not be parallel
-        _nonce = self._signer_nonce
+        _nonce = await self._return_and_increment_nonce()
+        protocol_state_contract = await self.get_protocol_state_contract(settings.protocol_state_address)
+        self._logger.trace(f'nonce: {_nonce}')
         try:
+            # Estimate gas for submitSubmissionBatch transaction
+            _ = await self._protocol_state_contract.functions.\
+                submitSubmissionBatch(
+                    txn_payload.dataMarketAddress,
+                    txn_payload.batchCID,
+                    txn_payload.epochID,
+                    list(txn_payload.projectIDs),
+                    list(txn_payload.snapshotCIDs),
+                    txn_payload.finalizedCIDsRootHash,
+                ).estimate_gas({'from': settings.signers[0].address})
+
             tx_hash = await write_transaction(
                 self._w3,
                 self._signer_account,
                 self._signer_pkey,
-                self._protocol_state_contract,
-                'submitSnapshot',
+                protocol_state_contract,
+                'submitSubmissionBatch',
                 _nonce,
-                txn_payload.slotId,
-                txn_payload.snapshotCid,
-                txn_payload.epochId,
-                txn_payload.projectId,
-                (
-                    txn_payload.request.slotId, txn_payload.request.deadline,
-                    txn_payload.request.snapshotCid, txn_payload.request.epochId,
-                    txn_payload.request.projectId,
-                ),
-                txn_payload.signature,
+                self._last_gas_price,
+                priority_gas_multiplier,
+                txn_payload.dataMarketAddress,
+                txn_payload.batchCID,
+                txn_payload.epochID,
+                txn_payload.projectIDs,
+                txn_payload.snapshotCIDs,
+                txn_payload.finalizedCIDsRootHash,
             )
-
-            self._signer_nonce += 1
 
             self._logger.info(
-                f'submitted transaction with tx_hash: {tx_hash}',
+                f'Submitted transaction with tx_hash: {tx_hash}',
             )
 
-        except Exception as e:
-            self._logger.error(f'Exception: {e}')
+            # Wait for transaction receipt with exponential backoff
+            receipt = None
+            for attempt in range(5):
+                try:
+                    receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30 * (2 ** attempt))
+                    break
+                except TransactionNotFound:
+                    if attempt == 4:
+                        raise
+                    await asyncio.sleep(5 * (2 ** attempt))
 
-            if 'nonce' in str(e):
-                # sleep for 10 seconds and reset nonce
-                await asyncio.sleep(10)
-                self._signer_nonce = await self._w3.eth.get_transaction_count(
-                    self._signer_account,
+            if 'baseFeePerGas' in receipt:
+                self._last_gas_price = receipt['baseFeePerGas']
+            if receipt.status != 1:
+
+                raise Exception(
+                    f'Transaction {tx_hash} failed, receipt: {receipt}',
                 )
+
+        except Exception as e:
+            if 'E25' in str(e):
                 self._logger.info(
-                    f'nonce reset to: {self._signer_nonce}',
+                    'Snapshot batch already submitted. Skipping...',
                 )
+                return
+            elif 'nonce too low' in str(e):
+                error = eval(str(e))
+                message = error['message']
+                next_nonce = int(message.split('next nonce ')[1].split(',')[0])
+                self._logger.info(
+                    'Nonce too low error. Next nonce: {}', next_nonce,
+                )
+                await self._reset_nonce(next_nonce)
                 raise Exception('nonce error, reset nonce')
             else:
-                raise Exception('other error, still retrying')
+                self._logger.info(
+                    'Error submitting snapshot. Retrying...',
+                )
+                await self._reset_nonce()
+                raise e
         else:
             return tx_hash
-        
-    async def _on_rabbitmq_message(self, message: IncomingMessage):
+
+    @retry(
+        reraise=True,
+        retry=retry_if_exception_type(Exception),
+        wait=wait_random_exponential(multiplier=1, max=10),
+        stop=stop_after_attempt(3),
+        after=txn_retry_callback,
+    )
+    async def submit_update_rewards(self, txn_payload: UpdateRewardsRequest, priority_gas_multiplier: int = 0):
         """
-        Callback function that is called when a message is received from RabbitMQ.
-        It processes the message and starts the processor task.
+        Submit a batch of transactions to the blockchain.
 
         Args:
-            message (IncomingMessage): The incoming message from RabbitMQ.
+            txn_payload (UpdateRewardsRequest): The payload containing update rewards data.
+            priority_gas_multiplier (int, optional): Gas price multiplier for priority. Defaults to 0.
+
+        Returns:
+            str: The transaction hash if successful.
+
+        Raises:
+            Exception: If the transaction fails or encounters a nonce error.
+        """
+        _nonce = await self._return_and_increment_nonce()
+        protocol_state_contract = await self.get_protocol_state_contract(settings.protocol_state_address)
+        self._logger.trace(f'nonce: {_nonce}')
+        try:
+
+            tx_hash = await write_transaction(
+                self._w3,
+                self._signer_account,
+                self._signer_pkey,
+                protocol_state_contract,
+                'updateRewards',
+                _nonce,
+                self._last_gas_price,
+                priority_gas_multiplier,
+                txn_payload.dataMarketAddress,
+                txn_payload.slotIDs,
+                txn_payload.submissionsList,
+                txn_payload.day,
+                txn_payload.eligibleNodes,
+            )
+
+            self._logger.info(
+                f'Submitted transaction with tx_hash: {tx_hash}',
+            )
+
+            # Wait for transaction receipt with exponential backoff
+            receipt = None
+            for attempt in range(5):
+                try:
+                    receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30 * (2 ** attempt))
+                    break
+                except TransactionNotFound:
+                    if attempt == 4:
+                        raise
+                    await asyncio.sleep(5 * (2 ** attempt))
+
+            if 'baseFeePerGas' in receipt:
+                self._last_gas_price = receipt['baseFeePerGas']
+            if receipt.status != 1:
+
+                raise Exception(
+                    f'Transaction {tx_hash} failed, receipt: {receipt}',
+                )
+
+        except Exception as e:
+            # Handle nonce errors
+            if 'nonce too low' in str(e):
+                error = eval(str(e))
+                message = error['message']
+                next_nonce = int(message.split('next nonce ')[1].split(',')[0])
+                self._logger.info(
+                    'Nonce too low error. Next nonce: {}', next_nonce,
+                )
+                await self._reset_nonce(next_nonce)
+                raise Exception('nonce error, reset nonce')
+            else:
+                self._logger.info(
+                    'Error submitting snapshot. Retrying...',
+                )
+                await self._reset_nonce()
+                raise e
+        else:
+            return tx_hash
+
+    @retry(
+        reraise=True,
+        retry=retry_if_exception_type(Exception),
+        wait=wait_random_exponential(multiplier=1, max=10),
+        stop=stop_after_attempt(3),
+        after=txn_retry_callback,
+    )
+    async def end_batch(self, txn_payload: EndBatchRequest, priority_gas_multiplier: int = 0):
+        """
+        End a batch submission on the blockchain.
+
+        Args:
+            data_market (str): The address of the data market.
+            epoch_id (int): The ID of the epoch.
+            priority_gas_multiplier (int, optional): Gas price multiplier for priority. Defaults to 0.
+
+        Returns:
+            str: The transaction hash if successful.
+
+        Raises:
+            Exception: If the transaction fails or encounters a nonce error.
+        """
+        # randomly wait 2-20 seconds
+        await asyncio.sleep(random.randint(2, 20))
+        try:
+            _ = await self._protocol_state_contract.functions.endBatchSubmissions(
+                txn_payload.dataMarketAddress, txn_payload.epochID,
+            ).estimate_gas({'from': settings.signers[0].address})
+        except Exception as e:
+            if 'E39' in str(e):
+                self._logger.info(
+                    'End batch submission already called. Skipping...',
+                )
+                return
+            else:
+                self._logger.opt(exception=True).error(
+                    'Error estimating gas for end batch submission. Error: {}',
+                    e,
+                )
+                raise e
+
+        # check if end batch submission already called
+        if await self.reader_redis_pool.get(end_batch_submission_called(txn_payload.dataMarketAddress, txn_payload.epochID)):
+            self._logger.info(
+                f'End batch submission already called for epoch {txn_payload.epochID}. Skipping...',
+            )
+            return
+        _nonce = await self._return_and_increment_nonce()
+        protocol_state_contract = await self.get_protocol_state_contract(settings.protocol_state_address)
+        self._logger.trace(f'nonce: {_nonce}')
+        try:
+            # Attempt to end the batch submission
+            tx_hash = await write_transaction(
+                self._w3,
+                self._signer_account,
+                self._signer_pkey,
+                protocol_state_contract,
+                'endBatchSubmissions',
+                _nonce,
+                self._last_gas_price,
+                priority_gas_multiplier,
+                txn_payload.dataMarketAddress,
+                txn_payload.epochID,
+            )
+
+            self._logger.info(
+                f'submitted batch end transaction with tx_hash: {tx_hash}, '
+                f'data_market: {txn_payload.dataMarketAddress}, epoch_id: {txn_payload.epochID}',
+            )
+
+            # Wait for transaction receipt and update gas price
+            transaction_receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            if 'baseFeePerGas' in transaction_receipt:
+                self._last_gas_price = transaction_receipt['baseFeePerGas']
+
+        except Exception as e:
+            # Handle nonce errors
+            if 'nonce too low' in str(e):
+                error = eval(str(e))
+                message = error['message']
+                next_nonce = int(message.split('next nonce ')[1].split(',')[0])
+                self._logger.info(
+                    'Nonce too low error. Next nonce: {}', next_nonce,
+                )
+                await self._reset_nonce(next_nonce)
+                raise Exception('nonce error, reset nonce')
+            else:
+                self._logger.info(
+                    'Error submitting batch end. Retrying...',
+                )
+                await self._reset_nonce()
+                raise e
+        else:
+            await self.writer_redis_pool.set(end_batch_submission_called(txn_payload.dataMarketAddress, txn_payload.epochID), True, ex=3600)
+            return tx_hash
+
+    async def _on_rabbitmq_message(self, message: IncomingMessage):
+        """
+        Process incoming RabbitMQ messages and handle batch submissions and reward updates.
+
+        This method processes two types of messages:
+        1. BatchSubmissionRequest - For submitting batches of snapshots
+        2. UpdateRewardsRequest - For updating reward distributions
+
+        For BatchSubmissionRequest messages, it:
+        - Submits the batch transaction
+        - Tracks submission counts against batch size
+        - Triggers end batch when size threshold is reached
+
+        For UpdateRewardsRequest messages, it:
+        - Submits the reward update transaction directly
+
+        Args:
+            message (IncomingMessage): The incoming RabbitMQ message containing either a
+                BatchSubmissionRequest or UpdateRewardsRequest payload
 
         Returns:
             None
         """
+        # Acknowledge message receipt and initialize
         await message.ack()
         await self.init()
+
         try:
-            msg_obj: TxnPayload = TxnPayload.parse_raw(message.body)
+            # Parse message payload - try BatchSubmissionRequest first, then UpdateRewardsRequest
+            try:
+                msg_obj = BatchSubmissionRequest.parse_raw(message.body)
+                self._logger.debug('Parsed message as BatchSubmissionRequest')
+            except ValidationError:
+                msg_obj = UpdateRewardsRequest.parse_raw(message.body)
+                self._logger.debug('Parsed message as UpdateRewardsRequest')
+
         except ValidationError as e:
+            # Log validation errors with message details
             self._logger.opt(exception=False).error(
-                (
-                    'Bad message structure of callback processor. Error: {}, {}'
-                ),
+                'Bad message structure of callback processor. Error: {}, {}',
                 e, message.body,
             )
             return
         except Exception as e:
+            # Log unexpected parsing errors
             self._logger.opt(exception=False).error(
-                (
-                    'Unexpected message structure of callback in processor. Error: {}'
-                ),
-                e,
+                'Unexpected message structure of callback in processor. '
+                'Error: {}', e,
             )
             return
         else:
-            asyncio.ensure_future(self.submit_snapshot(txn_payload=msg_obj))
+            if isinstance(msg_obj, BatchSubmissionRequest):
+                # Handle batch submission request
+                tx_hash = await self.submit_batch(txn_payload=msg_obj)
+
+                # Get configured batch size for this epoch
+                batch_size = await self.writer_redis_pool.get(
+                    epoch_batch_size(msg_obj.epochID),
+                )
+                if batch_size:
+                    # Track this submission
+                    await self.writer_redis_pool.sadd(
+                        epoch_batch_submissions(msg_obj.epochID),
+                        tx_hash,
+                    )
+                    # Get current submission count
+                    set_size = await self.writer_redis_pool.scard(
+                        epoch_batch_submissions(msg_obj.epochID),
+                    )
+                    # End batch if size threshold reached
+                    if int(set_size) >= int(batch_size):
+                        txn_payload = EndBatchRequest(
+                            dataMarketAddress=msg_obj.dataMarketAddress,
+                            epochID=msg_obj.epochID,
+                        )
+                        await self.end_batch(txn_payload=txn_payload)
+            else:
+                # Handle reward update request
+                tx_hash = await self.submit_update_rewards(txn_payload=msg_obj)
+
+
+if __name__ == '__main__':
+    tx_worker = TxWorker(name='tx_worker')
+    tx_worker.run()

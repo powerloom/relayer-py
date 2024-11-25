@@ -1,9 +1,7 @@
 import time
 from datetime import datetime
 from datetime import timedelta
-from json.decoder import JSONDecodeError
 
-import pydantic
 from async_limits import parse_many
 from fastapi import Depends
 from fastapi import Request
@@ -23,6 +21,13 @@ def incr_success_calls_count(
         request: Request,
         rate_limit_auth_dep: RateLimitAuthCheck,
 ):
+    """
+    Increment the successful calls count for a user.
+
+    Args:
+        request (Request): The FastAPI request object.
+        rate_limit_auth_dep (RateLimitAuthCheck): The rate limit authentication dependency.
+    """
     request.app.state.auth[rate_limit_auth_dep.owner.alias].callsCount += 1
 
 
@@ -30,10 +35,26 @@ def incr_throttled_calls_count(
         request: Request,
         rate_limit_auth_dep: RateLimitAuthCheck,
 ):
+    """
+    Increment the throttled calls count for a user.
+
+    Args:
+        request (Request): The FastAPI request object.
+        rate_limit_auth_dep (RateLimitAuthCheck): The rate limit authentication dependency.
+    """
     request.app.state.auth[rate_limit_auth_dep.owner.alias].throttledCount += 1
 
 
 def inject_rate_limit_fail_response(rate_limit_auth_check_dependency: RateLimitAuthCheck) -> JSONResponse:
+    """
+    Generate a JSON response for rate limit failure.
+
+    Args:
+        rate_limit_auth_check_dependency (RateLimitAuthCheck): The rate limit authentication check result.
+
+    Returns:
+        JSONResponse: A JSON response containing error details and appropriate status code.
+    """
     if rate_limit_auth_check_dependency.authorized:
         response_body = {
             'error': {
@@ -47,11 +68,11 @@ def inject_rate_limit_fail_response(rate_limit_auth_check_dependency: RateLimitA
             },
         }
         response_headers = {
-            'Retry-After': (datetime.now() + timedelta(rate_limit_auth_check_dependency.retry_after)).isoformat(),
+            'Retry-After': (datetime.now() + timedelta(seconds=rate_limit_auth_check_dependency.retry_after)).isoformat(),
         }
         response_status = 429
     else:
-        response_headers = dict()
+        response_headers = {}
         response_body = {
             'error': {
                 'details': rate_limit_auth_check_dependency.reason,
@@ -67,8 +88,18 @@ def inject_rate_limit_fail_response(rate_limit_auth_check_dependency: RateLimitA
 async def auth_check(
         request: Request,
 ) -> AuthCheck:
+    """
+    Perform authentication check for the incoming request.
+
+    Args:
+        request (Request): The FastAPI request object.
+
+    Returns:
+        AuthCheck: An AuthCheck object containing authentication results.
+    """
     auth_redis_conn: aioredis.Redis = request.app.state.writer_redis_pool
-    # public access. create owner based on IP address
+
+    # Determine user IP address
     if 'CF-Connecting-IP' in request.headers:
         user_ip = request.headers['CF-Connecting-IP']
     elif 'X-Forwarded-For' in request.headers:
@@ -114,6 +145,16 @@ async def rate_limit_auth_check(
         request: Request,
         auth_check_dep: AuthCheck = Depends(auth_check),
 ) -> RateLimitAuthCheck:
+    """
+    Perform rate limit authentication check for the incoming request.
+
+    Args:
+        request (Request): The FastAPI request object.
+        auth_check_dep (AuthCheck): The result of the initial authentication check.
+
+    Returns:
+        RateLimitAuthCheck: A RateLimitAuthCheck object containing rate limit check results.
+    """
     if auth_check_dep.authorized:
         auth_redis_conn: aioredis.Redis = request.app.state.writer_redis_pool
         try:
@@ -125,7 +166,7 @@ async def rate_limit_auth_check(
                 redis_conn=auth_redis_conn,
                 rate_limit_lua_script_shas=request.app.state.rate_limit_lua_script_shas,
             )
-        except:
+        except Exception:
             auth_check_dep.authorized = False
             auth_check_dep.reason = 'internal cache error'
             return RateLimitAuthCheck(
@@ -150,6 +191,7 @@ async def rate_limit_auth_check(
                 incr_throttled_calls_count(request, ret)
             return ret
         finally:
+            # Reset counters if the reset time has passed
             if auth_check_dep.owner.next_reset_at <= int(time.time()):
                 owner_updated_obj = auth_check_dep.owner.copy(deep=True)
                 owner_updated_obj.callsCount = 0

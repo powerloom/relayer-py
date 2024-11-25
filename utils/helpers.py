@@ -1,4 +1,4 @@
-import os
+import asyncio
 import sys
 from functools import wraps
 
@@ -30,69 +30,68 @@ def cleanup_proc_hub_children(fn):
                 'Received an exception on process hub core run(): {}',
                 e,
             )
-            # logger.error('Initiating kill children....')
-            # # silently kill all children
-            # procs = psutil.Process().children()
-            # for p in procs:
-            #     p.terminate()
-            # gone, alive = psutil.wait_procs(procs, timeout=3)
-            # for p in alive:
-            #     logger.error(f'killing process: {p.name()}')
-            #     p.kill()
+            # Kill all child processes
             self._kill_all_children()
             logger.error('Finished waiting for all children...now can exit.')
         finally:
             logger.error('Finished waiting for all children...now can exit.')
             self._reporter_thread.join()
             sys.exit(0)
-            # sys.exit(0)
     return wrapper
+
 
 def aiorwlock_aqcuire_release(fn):
     """
-    A decorator that wraps a function and handles cleanup of any child processes
-    spawned by the function in case of an exception.
+    A decorator that acquires and releases an asynchronous read-write lock around a function.
+
+    This decorator ensures that the wrapped function is executed with exclusive write access,
+    preventing concurrent execution of multiple instances of the decorated function.
 
     Args:
-        fn (function): The function to be wrapped.
+        fn (function): The asynchronous function to be wrapped.
 
     Returns:
-        function: The wrapped function.
+        function: The wrapped asynchronous function.
     """
     @wraps(fn)
     async def wrapper(self, *args, **kwargs):
+        self._logger.info(
+            'Using signer {} for submission task. Acquiring lock {}', self._signer_account, self._rwlock,
+        )
         await self._rwlock.writer_lock.acquire()
+
+        self._logger.info(
+            'Using signer {} for submission task. Acquired lock', self._signer_account,
+        )
+
         try:
-            tx_hash = await fn(self, *args, **kwargs)
+            # Execute the wrapped function
+            result = await fn(self, *args, **kwargs)
+        except Exception as e:
+            self._logger.opt(exception=True).error(
+                'Error in using signer {} for submission task: {}', self._signer_account, e,
+            )
+        finally:
             try:
+                # Always attempt to release the lock, even if an exception occurred
                 self._rwlock.writer_lock.release()
             except Exception as e:
-                logger.error(f'Error releasing rwlock: {e}. But moving on regardless...')
-        except Exception as e:
-            # this is ultimately reraised by tenacity once the retries are exhausted
-            # nothing to do here
-            pass
-        else:
-            if tx_hash is not None:
-                try:
-                    receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash)
-
-                    if receipt['status'] == 0:
-                        self._logger.info(
-                            f'tx_hash: {tx_hash} failed to gather success receipt after 120 seconds, receipt: {receipt}' # , payload: {txn_payload}',
-                        )
-                    else:
-                        self._logger.info(
-                            f'tx_hash: {tx_hash} succeeded!,'  # project_id: {txn_payload.projectId}, epoch_id: {txn_payload.epochId}',
-                        )
-                except:
-                    pass
-
+                logger.trace(
+                    'Error releasing rwlock: {}. But moving on regardless... | Context: '
+                    'Using signer {} for submission task: {}.', e, self._signer_account, kwargs,
+                )
+        return result
     return wrapper
+
 
 async def get_rabbitmq_robust_connection_async():
     """
-    Returns a robust connection to RabbitMQ server using the settings specified in the configuration file.
+    Establishes a robust connection to RabbitMQ server using the settings specified in the configuration file.
+
+    This function creates a connection that automatically recovers from network failures.
+
+    Returns:
+        aio_pika.Connection: A robust connection to RabbitMQ.
     """
     return await aio_pika.connect_robust(
         host=settings.rabbitmq.host,
@@ -105,9 +104,12 @@ async def get_rabbitmq_robust_connection_async():
 
 async def get_rabbitmq_basic_connection_async():
     """
-    Returns an async connection to RabbitMQ using the settings specified in the config file.
+    Establishes a basic asynchronous connection to RabbitMQ using the settings specified in the config file.
 
-    :return: An async connection to RabbitMQ.
+    This function creates a standard connection without automatic recovery features.
+
+    Returns:
+        aio_pika.Connection: A basic asynchronous connection to RabbitMQ.
     """
     return await aio_pika.connect(
         host=settings.rabbitmq.host,
@@ -118,15 +120,17 @@ async def get_rabbitmq_basic_connection_async():
     )
 
 
-async def get_rabbitmq_channel(connection_pool) -> aio_pika.Channel:
+async def get_rabbitmq_channel(connection_pool: Pool) -> aio_pika.Channel:
     """
     Acquires a connection from the connection pool and returns a channel object for RabbitMQ communication.
 
+    This function manages the lifecycle of the connection and channel, ensuring proper resource management.
+
     Args:
-        connection_pool: An instance of `aio_pika.pool.Pool`.
+        connection_pool (aio_pika.pool.Pool): An instance of the connection pool.
 
     Returns:
-        An instance of `aio_pika.Channel`.
+        aio_pika.Channel: A channel object for communicating with RabbitMQ.
     """
     async with connection_pool.acquire() as connection:
         return await connection.channel()

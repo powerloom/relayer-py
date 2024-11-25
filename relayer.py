@@ -1,18 +1,12 @@
 import asyncio
-import json
 import uuid
 from functools import partial
 from typing import Any
 from typing import Dict
 from typing import Optional
 
-import sha3
 from aio_pika import Message
 from aio_pika.pool import Pool
-from eip712_structs import EIP712Struct
-from eip712_structs import make_domain
-from eip712_structs import String
-from eip712_structs import Uint
 from fastapi import FastAPI
 from fastapi import Request as FastAPIRequest
 from fastapi import Response
@@ -22,11 +16,11 @@ from tenacity import retry
 from tenacity import retry_if_exception_type
 from tenacity import stop_after_attempt
 from tenacity import wait_random_exponential
-from web3 import AsyncHTTPProvider
-from web3 import AsyncWeb3
 
-from data_models import TxnPayload
-from helpers.redis_keys import timeslot_preference
+from data_models import BatchSizeRequest
+from data_models import BatchSubmissionRequest
+from data_models import UpdateRewardsRequest
+from helpers.redis_keys import epoch_batch_size
 from init_rabbitmq import get_core_exchange_name
 from init_rabbitmq import get_tx_send_q_routing_key
 from settings.conf import settings
@@ -35,30 +29,19 @@ from utils.helpers import get_rabbitmq_channel
 from utils.helpers import get_rabbitmq_robust_connection_async
 from utils.redis_conn import RedisPool
 
-
-class Request(EIP712Struct):
-    slotId = Uint()
-    deadline = Uint()
-    snapshotCid = String()
-    epochId = Uint()
-    projectId = String()
-
-
-def keccak_hash(x):
-    return sha3.keccak_256(x).digest()
-
-
+# Initialize logger for the relayer service
 service_logger = logger.bind(
     service='PowerLoom|OnChainConsensus|Relayer',
 )
 
-# setup CORS origins stuff
+# Setup CORS origins
 origins = ['*']
 
+# Initialize FastAPI app
 app = FastAPI()
 app.logger = service_logger
 
-
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -69,7 +52,24 @@ app.add_middleware(
 
 
 @app.middleware('http')
-async def request_middleware(request: FastAPIRequest, call_next: Any) -> Optional[Dict]:
+async def request_middleware(
+    request: FastAPIRequest,
+    call_next: Any,
+) -> Optional[Dict]:
+    """
+    Middleware to handle incoming HTTP requests.
+
+    This middleware function logs the start and end of each request,
+    generates a unique request ID, and handles any exceptions that occur
+    during request processing.
+
+    Args:
+        request (FastAPIRequest): The incoming request object.
+        call_next (Any): The next function in the middleware chain.
+
+    Returns:
+        Optional[Dict]: The response dictionary, or None if an error occurs.
+    """
     request_id = str(uuid.uuid4())
     request.state.request_id = request_id
 
@@ -77,21 +77,18 @@ async def request_middleware(request: FastAPIRequest, call_next: Any) -> Optiona
         service_logger.info('Request started for: {}', request.url)
         try:
             response = await call_next(request)
-
         except Exception as ex:
             service_logger.opt(exception=True).error(f'Request failed: {ex}')
-
             response = JSONResponse(
                 content={
-                    'info':
-                        {
-                            'success': False,
-                            'response': 'Internal Server Error',
-                        },
+                    'info': {
+                        'success': False,
+                        'response': 'Internal Server Error',
+                    },
                     'request_id': request_id,
-                }, status_code=500,
+                },
+                status_code=500,
             )
-
         finally:
             response.headers['X-Request-ID'] = request_id
             service_logger.info('Request ended')
@@ -100,104 +97,235 @@ async def request_middleware(request: FastAPIRequest, call_next: Any) -> Optiona
 
 @app.on_event('startup')
 async def startup_boilerplate():
+    """
+    Initialize necessary components on application startup.
+
+    This function sets up Redis pools, RabbitMQ connection pools,
+    and RabbitMQ channel pools for the application to use.
+    """
+    # Initialize Redis pools
     app.state.aioredis_pool = RedisPool(writer_redis_conf=settings.redis)
     await app.state.aioredis_pool.populate()
     app.state.reader_redis_pool = app.state.aioredis_pool.reader_redis_pool
     app.state.writer_redis_pool = app.state.aioredis_pool.writer_redis_pool
+
+    # Initialize RabbitMQ connection pool
     app.state.rmq_connection_pool = Pool(
-        get_rabbitmq_robust_connection_async, max_size=5, loop=asyncio.get_running_loop(),
-    )
-    app.state.rmq_channel_pool = Pool(
-        partial(get_rabbitmq_channel, app.state.rmq_connection_pool), max_size=20,
+        get_rabbitmq_robust_connection_async,
+        max_size=5,
         loop=asyncio.get_running_loop(),
     )
-    # load abi from json file and create contract object
-    with open('utils/static/abi.json', 'r') as f:
-        app.state.abi = json.load(f)
 
-    app.state.w3 = AsyncWeb3(
-        AsyncHTTPProvider(
-            settings.anchor_chain.rpc.full_nodes[0].url,
-        ),
-    )
-    app.state.protocol_state_contract = app.state.w3.eth.contract(
-        address=settings.protocol_state_address, abi=app.state.abi,
-    )
-
-    app.state.epoch_size = await app.state.protocol_state_contract.functions.EPOCH_SIZE().call()
-    app.state.source_chain_block_time = (await app.state.protocol_state_contract.functions.SOURCE_CHAIN_BLOCK_TIME().call()) / 1e4
-    app.state.epochs_in_a_day = 86400 // (
-        app.state.epoch_size * app.state.source_chain_block_time
+    # Initialize RabbitMQ channel pool
+    app.state.rmq_channel_pool = Pool(
+        partial(get_rabbitmq_channel, app.state.rmq_connection_pool),
+        max_size=20,
+        loop=asyncio.get_running_loop(),
     )
 
 
-# submitSnapshot
 @retry(
     reraise=True,
     retry=retry_if_exception_type(Exception),
     wait=wait_random_exponential(multiplier=1, max=10),
     stop=stop_after_attempt(3),
 )
-async def submit_snapshot(request: FastAPIRequest, txn_payload: TxnPayload):
+async def submit_batch(
+    request: FastAPIRequest,
+    batch_payload: BatchSubmissionRequest,
+):
     """
-    Submit Snapshot
+    Submit a snapshot to the RabbitMQ exchange.
+
+    This function publishes a batch submission request to a RabbitMQ exchange.
+    It uses a retry decorator to handle potential failures.
+
+    Args:
+        request (FastAPIRequest): The incoming request object.
+        batch_payload (BatchSubmissionRequest): The batch payload to be submitted.
+
+    Raises:
+        Exception: If the submission fails after all retry attempts.
     """
     async with request.app.state.rmq_channel_pool.acquire() as channel:
         exchange = await channel.get_exchange(name=get_core_exchange_name())
         queue_name, routing_key = get_tx_send_q_routing_key()
         await exchange.publish(
             routing_key=routing_key,
-            message=Message(txn_payload.json().encode('utf-8')),
+            message=Message(batch_payload.json().encode('utf-8')),
         )
 
 
-async def _get_signer_address(request: FastAPIRequest, txn_payload: TxnPayload):
-    """
-    Get Signer Address
-    """
-
-    request_ = txn_payload.request.dict()
-    signature = bytes.fromhex(txn_payload.signature[2:])
-    signature_request = Request(
-        slotId=request_['slotId'],
-        deadline=request_['deadline'],
-        snapshotCid=request_['snapshotCid'],
-        epochId=request_['epochId'],
-        projectId=request_['projectId'],
-    )
-
-    domain_separator = make_domain(
-        name='PowerloomProtocolContract',
-        version='0.1', chainId=settings.anchor_chain.chain_id,
-        verifyingContract=request.app.state.w3.to_checksum_address(
-            txn_payload.contractAddress,
-        ),
-    )
-
-    signable_bytes = signature_request.signable_bytes(domain_separator)
-    message_hash = keccak_hash(signable_bytes)
-    signer_address = request.app.state.w3.eth.account._recover_hash(
-        message_hash, signature=signature,
-    )
-    return signer_address
-
-
-@app.post('/submitSnapshot')
-async def submit(
+@retry(
+    reraise=True,
+    retry=retry_if_exception_type(Exception),
+    wait=wait_random_exponential(multiplier=1, max=10),
+    stop=stop_after_attempt(3),
+)
+async def submit_update_rewards(
     request: FastAPIRequest,
-    req_parsed: TxnPayload,
+    update_rewards_payload: UpdateRewardsRequest,
+):
+    """
+    Submit a rewards update request to the RabbitMQ exchange.
+
+    This function publishes a rewards update request to a RabbitMQ exchange for processing.
+    It uses a retry decorator to handle potential failures in the submission process.
+
+    Args:
+        request (FastAPIRequest): The incoming FastAPI request object containing app state
+        update_rewards_payload (UpdateRewardsRequest): The payload containing rewards update data
+            including slot IDs, submissions list, day and eligible nodes
+
+    Raises:
+        Exception: If the submission fails after all retry attempts
+    """
+    # Acquire a channel from the RabbitMQ channel pool
+    async with request.app.state.rmq_channel_pool.acquire() as channel:
+        # Get the core exchange to publish messages
+        exchange = await channel.get_exchange(name=get_core_exchange_name())
+
+        # Get queue name and routing key for transaction checking queue
+        queue_name, routing_key = get_tx_send_q_routing_key()
+
+        # Publish the encoded payload to the exchange
+        await exchange.publish(
+            routing_key=routing_key,
+            message=Message(update_rewards_payload.json().encode('utf-8')),
+        )
+
+
+@app.post('/submitBatchSize')
+async def submit_batch_size(
+    request: FastAPIRequest,
+    req_parsed: BatchSizeRequest,
     response: Response,
 ):
     """
-    Submit Snapshot
+    Submit batch size to Redis.
+
+    This endpoint receives a batch size request and stores it in Redis.
+
+    Args:
+        request (FastAPIRequest): The incoming request object.
+        req_parsed (BatchSizeRequest): The parsed batch size request.
+        response (Response): The response object.
+
+    Returns:
+        JSONResponse: A JSON response indicating success or failure.
     """
-    try:
-        await submit_snapshot(
-            request, req_parsed,
+    if req_parsed.authToken != settings.auth_token:
+        return JSONResponse(
+            status_code=401,
+            content={'message': 'Unauthorized'},
         )
-
-        return JSONResponse(status_code=200, content={'message': 'Submitted Snapshot to relayer!'})
-
+    service_logger.debug('Received batch size request: {}', req_parsed)
+    try:
+        # Store batch size in Redis
+        await request.app.state.writer_redis_pool.set(
+            epoch_batch_size(req_parsed.epochID),
+            req_parsed.batchSize,
+        )
+        return JSONResponse(
+            status_code=200,
+            content={'message': 'Submitted Batch Size to relayer!'},
+        )
     except Exception as e:
         service_logger.opt(exception=True).error(f'Exception: {e}')
-        return JSONResponse(status_code=500, content={'message': 'Invalid request payload!'})
+        return JSONResponse(
+            status_code=500,
+            content={'message': 'Invalid request payload!'},
+        )
+
+
+@app.post('/submitSubmissionBatch')
+async def submit_batch_submission(
+    request: FastAPIRequest,
+    req_parsed: BatchSubmissionRequest,
+    response: Response,
+):
+    """
+    Submit a snapshot batch.
+
+    This endpoint receives a batch submission request and forwards it to the
+    submit_batch function for processing.
+
+    Args:
+        request (FastAPIRequest): The incoming request object.
+        req_parsed (BatchSubmissionRequest): The parsed batch submission request.
+        response (Response): The response object.
+
+    Returns:
+        JSONResponse: A JSON response indicating success or failure.
+    """
+    if req_parsed.authToken != settings.auth_token:
+        return JSONResponse(
+            status_code=401,
+            content={'message': 'Unauthorized'},
+        )
+    service_logger.debug(
+        'Received batch submission request for epoch {} and data market {} and batch cid {}',
+        req_parsed.epochID,
+        req_parsed.dataMarketAddress,
+        req_parsed.batchCID,
+    )
+    try:
+        await submit_batch(request, req_parsed)
+        return JSONResponse(
+            status_code=200,
+            content={'message': 'Submitted Snapshot to relayer!'},
+        )
+    except Exception as e:
+        service_logger.opt(exception=True).error(f'Exception: {e}')
+        return JSONResponse(
+            status_code=500,
+            content={'message': 'Invalid request payload!'},
+        )
+
+
+@app.post('/submitUpdateRewards')
+async def submit_update_rewards_submission(
+    request: FastAPIRequest,
+    req_parsed: UpdateRewardsRequest,
+    response: Response,
+):
+    """
+    Submit an update rewards request.
+
+    This endpoint receives an update rewards request and forwards it to the
+    submit_update_rewards function for processing. It handles authentication
+    and validation of the request.
+
+    Args:
+        request (FastAPIRequest): The incoming request object.
+        req_parsed (UpdateRewardsRequest): The parsed update rewards request containing
+            data market address, slot IDs, submissions list, day and eligible nodes.
+        response (Response): The response object.
+
+    Returns:
+        JSONResponse: A JSON response indicating success (200) or failure (401/500).
+    """
+    # Verify authentication token
+    if req_parsed.authToken != settings.auth_token:
+        return JSONResponse(
+            status_code=401,
+            content={'message': 'Unauthorized'},
+        )
+
+    # Log the incoming request
+    service_logger.debug('Received update rewards request: {}', req_parsed)
+
+    try:
+        # Process the update rewards request
+        await submit_update_rewards(request, req_parsed)
+        return JSONResponse(
+            status_code=200,
+            content={'message': 'Submitted Update Rewards to relayer!'},
+        )
+    except Exception as e:
+        # Log any errors that occur during processing
+        service_logger.opt(exception=True).error(f'Exception: {e}')
+        return JSONResponse(
+            status_code=500,
+            content={'message': 'Invalid request payload!'},
+        )
