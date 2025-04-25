@@ -7,8 +7,6 @@ const { signers } = settings;
 // Common configuration for all apps
 const commonConfig = {
   min_uptime: MIN_UPTIME,
-  error_file: "/dev/null",
-  out_file: "/dev/null",
   env: {
     NODE_ENV: NODE_ENV,
   },

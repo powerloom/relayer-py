@@ -128,7 +128,7 @@ class TxWorker(GenericAsyncWorker):
         reraise=True,
         retry=retry_if_exception_type(Exception),
         wait=wait_random_exponential(multiplier=1, max=10),
-        stop=stop_after_attempt(3),
+        stop=stop_after_attempt(7),
         after=txn_retry_callback,
     )
     async def submit_batch(self, txn_payload: BatchSubmissionRequest, priority_gas_multiplier: int = 0):
@@ -201,6 +201,10 @@ class TxWorker(GenericAsyncWorker):
                 )
 
         except Exception as e:
+            self._logger.opt(exception=True).error(
+                'Error submitting snapshot. Error: {}',
+                e,
+            )
             if 'E25' in str(e):
                 self._logger.info(
                     'Snapshot batch already submitted. Skipping...',
@@ -209,10 +213,16 @@ class TxWorker(GenericAsyncWorker):
             elif 'nonce too low' in str(e):
                 error = eval(str(e))
                 message = error['message']
-                next_nonce = int(message.split('next nonce ')[1].split(',')[0])
-                self._logger.info(
-                    'Nonce too low error. Next nonce: {}', next_nonce,
-                )
+                if 'next nonce' in message:
+                    next_nonce = int(message.split('next nonce ')[1].split(',')[0])
+                    self._logger.info(
+                        'Nonce too low error. Next nonce: {}', next_nonce,
+                    )
+                elif 'state:' in message:
+                    next_nonce = int(message.split('state: ')[1])
+                    self._logger.info(
+                        'Nonce too low error. Next nonce: {}', next_nonce,
+                    )
                 await self._reset_nonce(next_nonce)
                 raise Exception('nonce error, reset nonce')
             else:
@@ -228,7 +238,7 @@ class TxWorker(GenericAsyncWorker):
         reraise=True,
         retry=retry_if_exception_type(Exception),
         wait=wait_random_exponential(multiplier=1, max=10),
-        stop=stop_after_attempt(3),
+        stop=stop_after_attempt(7),
         after=txn_retry_callback,
     )
     async def submit_update_rewards(self, txn_payload: UpdateRewardsRequest, priority_gas_multiplier: int = 0):
@@ -313,7 +323,7 @@ class TxWorker(GenericAsyncWorker):
         reraise=True,
         retry=retry_if_exception_type(Exception),
         wait=wait_random_exponential(multiplier=1, max=10),
-        stop=stop_after_attempt(3),
+        stop=stop_after_attempt(7),
         after=txn_retry_callback,
     )
     async def end_batch(self, txn_payload: EndBatchRequest, priority_gas_multiplier: int = 0):
