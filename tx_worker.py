@@ -211,7 +211,7 @@ class TxWorker(GenericAsyncWorker):
                 self._logger.info(
                     'Snapshot batch already submitted. Skipping...',
                 )
-                return
+                return ""
             elif 'nonce too low' in str(e):
                 error = eval(str(e))
                 message = error['message']
@@ -366,7 +366,7 @@ class TxWorker(GenericAsyncWorker):
                 self._logger.info(
                     'End batch submission already called. Skipping...',
                 )
-                return
+                return ""
             else:
                 self._logger.opt(exception=True).error(
                     'Error estimating gas for end batch submission. Error: {}',
@@ -379,7 +379,7 @@ class TxWorker(GenericAsyncWorker):
             self._logger.info(
                 f'End batch submission already called for epoch {txn_payload.epochID}. Skipping...',
             )
-            return
+            return ""
         _nonce = await self._return_and_increment_nonce()
         protocol_state_contract = await self.get_protocol_state_contract(settings.protocol_state_address)
         self._logger.trace(f'nonce: {_nonce}')
@@ -484,28 +484,28 @@ class TxWorker(GenericAsyncWorker):
                 if isinstance(msg_obj, BatchSubmissionRequest):
                     # Handle batch submission request
                     tx_hash = await self.submit_batch(txn_payload=msg_obj)
-
-                    # Get configured batch size for this epoch
-                    batch_size = await self.writer_redis_pool.get(
-                        epoch_batch_size(msg_obj.epochID),
-                    )
-                    if batch_size:
-                        # Track this submission
-                        await self.writer_redis_pool.sadd(
-                            epoch_batch_submissions(msg_obj.epochID),
-                            tx_hash,
+                    if tx_hash != "":
+                        # Get configured batch size for this epoch
+                        batch_size = await self.writer_redis_pool.get(
+                            epoch_batch_size(msg_obj.epochID),
                         )
-                        # Get current submission count
-                        set_size = await self.writer_redis_pool.scard(
-                            epoch_batch_submissions(msg_obj.epochID),
-                        )
-                        # End batch if size threshold reached
-                        if int(set_size) >= int(batch_size):
-                            txn_payload = EndBatchRequest(
-                                dataMarketAddress=msg_obj.dataMarketAddress,
-                                epochID=msg_obj.epochID,
+                        if batch_size:
+                            # Track this submission
+                            await self.writer_redis_pool.sadd(
+                                epoch_batch_submissions(msg_obj.epochID),
+                                tx_hash,
                             )
-                            await self.end_batch(txn_payload=txn_payload)
+                            # Get current submission count
+                            set_size = await self.writer_redis_pool.scard(
+                                epoch_batch_submissions(msg_obj.epochID),
+                            )
+                            # End batch if size threshold reached
+                            if int(set_size) >= int(batch_size):
+                                txn_payload = EndBatchRequest(
+                                    dataMarketAddress=msg_obj.dataMarketAddress,
+                                    epochID=msg_obj.epochID,
+                                )
+                                await self.end_batch(txn_payload=txn_payload)
                 else:
                     # Handle reward update request
                     tx_hash = await self.submit_update_rewards(txn_payload=msg_obj)
