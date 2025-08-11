@@ -12,6 +12,7 @@ from web3.exceptions import TransactionNotFound
 
 from data_models import BatchSubmissionRequest
 from data_models import EndBatchRequest
+from data_models import ErrorMessage
 from data_models import UpdateRewardsRequest
 from helpers.redis_keys import end_batch_submission_called
 from helpers.redis_keys import epoch_batch_size
@@ -21,6 +22,7 @@ from settings.conf import settings
 from utils.default_logger import logger
 from utils.generic_worker import GenericAsyncWorker
 from utils.helpers import aiorwlock_aqcuire_release
+from utils.notification_utils import send_failure_notifications
 from utils.transaction_utils import write_transaction
 
 
@@ -478,34 +480,45 @@ class TxWorker(GenericAsyncWorker):
             )
             return
         else:
-            if isinstance(msg_obj, BatchSubmissionRequest):
-                # Handle batch submission request
-                tx_hash = await self.submit_batch(txn_payload=msg_obj)
+            try:
+                if isinstance(msg_obj, BatchSubmissionRequest):
+                    # Handle batch submission request
+                    tx_hash = await self.submit_batch(txn_payload=msg_obj)
 
-                # Get configured batch size for this epoch
-                batch_size = await self.writer_redis_pool.get(
-                    epoch_batch_size(msg_obj.epochID),
-                )
-                if batch_size:
-                    # Track this submission
-                    await self.writer_redis_pool.sadd(
-                        epoch_batch_submissions(msg_obj.epochID),
-                        tx_hash,
+                    # Get configured batch size for this epoch
+                    batch_size = await self.writer_redis_pool.get(
+                        epoch_batch_size(msg_obj.epochID),
                     )
-                    # Get current submission count
-                    set_size = await self.writer_redis_pool.scard(
-                        epoch_batch_submissions(msg_obj.epochID),
-                    )
-                    # End batch if size threshold reached
-                    if int(set_size) >= int(batch_size):
-                        txn_payload = EndBatchRequest(
-                            dataMarketAddress=msg_obj.dataMarketAddress,
-                            epochID=msg_obj.epochID,
+                    if batch_size:
+                        # Track this submission
+                        await self.writer_redis_pool.sadd(
+                            epoch_batch_submissions(msg_obj.epochID),
+                            tx_hash,
                         )
-                        await self.end_batch(txn_payload=txn_payload)
-            else:
-                # Handle reward update request
-                tx_hash = await self.submit_update_rewards(txn_payload=msg_obj)
+                        # Get current submission count
+                        set_size = await self.writer_redis_pool.scard(
+                            epoch_batch_submissions(msg_obj.epochID),
+                        )
+                        # End batch if size threshold reached
+                        if int(set_size) >= int(batch_size):
+                            txn_payload = EndBatchRequest(
+                                dataMarketAddress=msg_obj.dataMarketAddress,
+                                epochID=msg_obj.epochID,
+                            )
+                            await self.end_batch(txn_payload=txn_payload)
+                else:
+                    # Handle reward update request
+                    tx_hash = await self.submit_update_rewards(txn_payload=msg_obj)
+            except Exception as e:
+                self._logger.opt(exception=True).error(
+                    'Error submitting batch or reward update. Error: {}',
+                    e,
+                )
+                error_message = ErrorMessage(
+                    error=str(e),
+                    raw_payload=str(msg_obj.model_dump_json()),
+                )
+                await send_failure_notifications(message=error_message)
 
 
 if __name__ == '__main__':

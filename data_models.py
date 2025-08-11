@@ -152,6 +152,12 @@ class BatchSubmissionRequest(BaseModel):
     authToken: str
 
 
+class ErrorMessage(BaseModel):
+    """Request model for error message."""
+    error: str
+    raw_payload: str
+
+
 class UpdateRewardsRequest(BaseModel):
     """Request model for update rewards operations."""
     dataMarketAddress: str
