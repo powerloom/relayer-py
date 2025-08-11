@@ -516,7 +516,7 @@ class TxWorker(GenericAsyncWorker):
                 )
                 error_message = ErrorMessage(
                     error=str(e),
-                    raw_payload=str(msg_obj.model_dump_json()),
+                    raw_payload=str(msg_obj.dict()),
                 )
                 await send_failure_notifications(message=error_message)
 
