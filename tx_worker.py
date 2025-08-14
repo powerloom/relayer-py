@@ -37,7 +37,7 @@ def txn_retry_callback(retry_state: tenacity.RetryCallState):
         None
     """
     if retry_state.attempt_number >= 3:
-        logger.error(
+        logger.opt(exception=True).error(
             'Submission worker failed after 3 attempts | Txn payload: {}',
             retry_state.kwargs['txn_payload'],
         )
@@ -130,7 +130,7 @@ class TxWorker(GenericAsyncWorker):
         reraise=True,
         retry=retry_if_exception_type(Exception),
         wait=wait_random_exponential(multiplier=1, max=10),
-        stop=stop_after_attempt(7),
+        stop=stop_after_attempt(10),
         after=txn_retry_callback,
     )
     async def submit_batch(self, txn_payload: BatchSubmissionRequest, priority_gas_multiplier: int = 0):
@@ -211,7 +211,7 @@ class TxWorker(GenericAsyncWorker):
                 self._logger.info(
                     'Snapshot batch already submitted. Skipping...',
                 )
-                return ""
+                return ''
             elif 'nonce too low' in str(e):
                 error = eval(str(e))
                 message = error['message']
@@ -252,7 +252,7 @@ class TxWorker(GenericAsyncWorker):
         reraise=True,
         retry=retry_if_exception_type(Exception),
         wait=wait_random_exponential(multiplier=1, max=10),
-        stop=stop_after_attempt(7),
+        stop=stop_after_attempt(10),
         after=txn_retry_callback,
     )
     async def submit_update_rewards(self, txn_payload: UpdateRewardsRequest, priority_gas_multiplier: int = 0):
@@ -337,7 +337,7 @@ class TxWorker(GenericAsyncWorker):
         reraise=True,
         retry=retry_if_exception_type(Exception),
         wait=wait_random_exponential(multiplier=1, max=10),
-        stop=stop_after_attempt(7),
+        stop=stop_after_attempt(10),
         after=txn_retry_callback,
     )
     async def end_batch(self, txn_payload: EndBatchRequest, priority_gas_multiplier: int = 0):
@@ -366,7 +366,7 @@ class TxWorker(GenericAsyncWorker):
                 self._logger.info(
                     'End batch submission already called. Skipping...',
                 )
-                return ""
+                return ''
             else:
                 self._logger.opt(exception=True).error(
                     'Error estimating gas for end batch submission. Error: {}',
@@ -379,7 +379,7 @@ class TxWorker(GenericAsyncWorker):
             self._logger.info(
                 f'End batch submission already called for epoch {txn_payload.epochID}. Skipping...',
             )
-            return ""
+            return ''
         _nonce = await self._return_and_increment_nonce()
         protocol_state_contract = await self.get_protocol_state_contract(settings.protocol_state_address)
         self._logger.trace(f'nonce: {_nonce}')
@@ -484,7 +484,7 @@ class TxWorker(GenericAsyncWorker):
                 if isinstance(msg_obj, BatchSubmissionRequest):
                     # Handle batch submission request
                     tx_hash = await self.submit_batch(txn_payload=msg_obj)
-                    if tx_hash != "":
+                    if tx_hash != '':
                         # Get configured batch size for this epoch
                         batch_size = await self.writer_redis_pool.get(
                             epoch_batch_size(msg_obj.epochID),
