@@ -99,10 +99,12 @@ class TxWorker(GenericAsyncWorker):
     @aiorwlock_aqcuire_release
     async def _reset_nonce(self, value: int = 0):
         """
-        Reset the nonce to a specific value or fetch the correct nonce from the blockchain.
+        Reset the nonce to a specific value or fetch the correct nonce from
+        the blockchain.
 
         Args:
-            value (int, optional): The value to reset the nonce to. Defaults to 0.
+            value (int, optional): The value to reset the nonce to.
+                Defaults to 0.
         """
         if value > 0:
             self._signer_nonce = value
@@ -122,7 +124,8 @@ class TxWorker(GenericAsyncWorker):
                 )
             else:
                 self._logger.error(
-                    'Using signer {} for submission task. Could not reset nonce',
+                    'Using signer {} for submission task. '
+                    'Could not reset nonce',
                     self._signer_account,
                 )
 
@@ -133,13 +136,19 @@ class TxWorker(GenericAsyncWorker):
         stop=stop_after_attempt(10),
         after=txn_retry_callback,
     )
-    async def submit_batch(self, txn_payload: BatchSubmissionRequest, priority_gas_multiplier: int = 0):
+    async def submit_batch(
+        self,
+        txn_payload: BatchSubmissionRequest,
+        priority_gas_multiplier: int = 0,
+    ):
         """
         Submit a batch of transactions to the blockchain.
 
         Args:
-            txn_payload (BatchSubmissionRequest): The payload containing batch submission data.
-            priority_gas_multiplier (int, optional): Gas price multiplier for priority. Defaults to 0.
+            txn_payload (BatchSubmissionRequest): The payload containing batch
+                submission data.
+            priority_gas_multiplier (int, optional): Gas price multiplier for
+                priority. Defaults to 0.
 
         Returns:
             str: The transaction hash if successful.
@@ -148,7 +157,9 @@ class TxWorker(GenericAsyncWorker):
             Exception: If the transaction fails or encounters a nonce error.
         """
         _nonce = await self._return_and_increment_nonce()
-        protocol_state_contract = await self.get_protocol_state_contract(settings.protocol_state_address)
+        protocol_state_contract = await self.get_protocol_state_contract(
+            settings.protocol_state_address,
+        )
         self._logger.trace(f'nonce: {_nonce}')
         try:
             # Estimate gas for submitSubmissionBatch transaction
@@ -187,7 +198,9 @@ class TxWorker(GenericAsyncWorker):
             receipt = None
             for attempt in range(5):
                 try:
-                    receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30 * (2 ** attempt))
+                    receipt = await self._w3.eth.wait_for_transaction_receipt(
+                        tx_hash, timeout=30 * (2 ** attempt),
+                    )
                     break
                 except TransactionNotFound:
                     if attempt == 4:
@@ -255,13 +268,19 @@ class TxWorker(GenericAsyncWorker):
         stop=stop_after_attempt(10),
         after=txn_retry_callback,
     )
-    async def submit_update_rewards(self, txn_payload: UpdateRewardsRequest, priority_gas_multiplier: int = 0):
+    async def submit_update_rewards(
+        self,
+        txn_payload: UpdateRewardsRequest,
+        priority_gas_multiplier: int = 0,
+    ):
         """
         Submit a batch of transactions to the blockchain.
 
         Args:
-            txn_payload (UpdateRewardsRequest): The payload containing update rewards data.
-            priority_gas_multiplier (int, optional): Gas price multiplier for priority. Defaults to 0.
+            txn_payload (UpdateRewardsRequest): The payload containing update
+                rewards data.
+            priority_gas_multiplier (int, optional): Gas price multiplier for
+                priority. Defaults to 0.
 
         Returns:
             str: The transaction hash if successful.
@@ -270,7 +289,9 @@ class TxWorker(GenericAsyncWorker):
             Exception: If the transaction fails or encounters a nonce error.
         """
         _nonce = await self._return_and_increment_nonce()
-        protocol_state_contract = await self.get_protocol_state_contract(settings.protocol_state_address)
+        protocol_state_contract = await self.get_protocol_state_contract(
+            settings.protocol_state_address,
+        )
         self._logger.trace(f'nonce: {_nonce}')
         try:
 
@@ -298,7 +319,9 @@ class TxWorker(GenericAsyncWorker):
             receipt = None
             for attempt in range(5):
                 try:
-                    receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30 * (2 ** attempt))
+                    receipt = await self._w3.eth.wait_for_transaction_receipt(
+                        tx_hash, timeout=30 * (2 ** attempt),
+                    )
                     break
                 except TransactionNotFound:
                     if attempt == 4:
@@ -340,14 +363,19 @@ class TxWorker(GenericAsyncWorker):
         stop=stop_after_attempt(10),
         after=txn_retry_callback,
     )
-    async def end_batch(self, txn_payload: EndBatchRequest, priority_gas_multiplier: int = 0):
+    async def end_batch(
+        self,
+        txn_payload: EndBatchRequest,
+        priority_gas_multiplier: int = 0,
+    ):
         """
         End a batch submission on the blockchain.
 
         Args:
             data_market (str): The address of the data market.
             epoch_id (int): The ID of the epoch.
-            priority_gas_multiplier (int, optional): Gas price multiplier for priority. Defaults to 0.
+            priority_gas_multiplier (int, optional): Gas price multiplier for
+                priority. Defaults to 0.
 
         Returns:
             str: The transaction hash if successful.
@@ -358,9 +386,10 @@ class TxWorker(GenericAsyncWorker):
         # randomly wait 2-20 seconds
         await asyncio.sleep(random.randint(2, 20))
         try:
-            _ = await self._protocol_state_contract.functions.endBatchSubmissions(
-                txn_payload.dataMarketAddress, txn_payload.epochID,
-            ).estimate_gas({'from': settings.signers[0].address})
+            _ = await self._protocol_state_contract.functions.\
+                endBatchSubmissions(
+                    txn_payload.dataMarketAddress, txn_payload.epochID,
+                ).estimate_gas({'from': settings.signers[0].address})
         except Exception as e:
             if 'E39' in str(e):
                 self._logger.info(
@@ -375,13 +404,20 @@ class TxWorker(GenericAsyncWorker):
                 raise e
 
         # check if end batch submission already called
-        if await self.reader_redis_pool.get(end_batch_submission_called(txn_payload.dataMarketAddress, txn_payload.epochID)):
+        if await self.reader_redis_pool.get(
+            end_batch_submission_called(
+                txn_payload.dataMarketAddress, txn_payload.epochID,
+            ),
+        ):
             self._logger.info(
-                f'End batch submission already called for epoch {txn_payload.epochID}. Skipping...',
+                f'End batch submission already called for epoch '
+                f'{txn_payload.epochID}. Skipping...',
             )
             return ''
         _nonce = await self._return_and_increment_nonce()
-        protocol_state_contract = await self.get_protocol_state_contract(settings.protocol_state_address)
+        protocol_state_contract = await self.get_protocol_state_contract(
+            settings.protocol_state_address,
+        )
         self._logger.trace(f'nonce: {_nonce}')
         try:
             # Attempt to end the batch submission
@@ -400,11 +436,15 @@ class TxWorker(GenericAsyncWorker):
 
             self._logger.info(
                 f'submitted batch end transaction with tx_hash: {tx_hash}, '
-                f'data_market: {txn_payload.dataMarketAddress}, epoch_id: {txn_payload.epochID}',
+                f'data_market: {txn_payload.dataMarketAddress}, '
+                f'epoch_id: {txn_payload.epochID}',
             )
 
             # Wait for transaction receipt and update gas price
-            transaction_receipt = await self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            transaction_receipt = await \
+                self._w3.eth.wait_for_transaction_receipt(
+                    tx_hash, timeout=60,
+                )
             if 'baseFeePerGas' in transaction_receipt:
                 self._last_gas_price = transaction_receipt['baseFeePerGas']
 
@@ -413,12 +453,29 @@ class TxWorker(GenericAsyncWorker):
             if 'nonce too low' in str(e):
                 error = eval(str(e))
                 message = error['message']
-                next_nonce = int(message.split('next nonce ')[1].split(',')[0])
-                self._logger.info(
-                    'Nonce too low error. Next nonce: {}', next_nonce,
-                )
-                await self._reset_nonce(next_nonce)
-                raise Exception('nonce error, reset nonce')
+                if 'next nonce' in message:
+                    next_nonce = int(
+                        message.split(
+                            'next nonce ',
+                        )[1].split(',')[0],
+                    )
+                    self._logger.info(
+                        'Nonce too low error. Next nonce: {}', next_nonce,
+                    )
+                    await self._reset_nonce(next_nonce)
+                    raise Exception('nonce error, reset nonce')
+
+                elif 'state:' in message:
+                    next_nonce = int(message.split('state: ')[1])
+                    self._logger.info(
+                        'Nonce too low error. Next nonce: {}', next_nonce,
+                    )
+                    await self._reset_nonce(next_nonce)
+                    raise Exception('nonce error, reset nonce')
+
+                else:
+                    await self._reset_nonce()
+                    raise Exception('nonce error, reset nonce')
             else:
                 self._logger.info(
                     'Error submitting batch end. Retrying...',
@@ -426,12 +483,19 @@ class TxWorker(GenericAsyncWorker):
                 await self._reset_nonce()
                 raise e
         else:
-            await self.writer_redis_pool.set(end_batch_submission_called(txn_payload.dataMarketAddress, txn_payload.epochID), True, ex=3600)
+            await self.writer_redis_pool.set(
+                end_batch_submission_called(
+                    txn_payload.dataMarketAddress, txn_payload.epochID,
+                ),
+                True,
+                ex=3600,
+            )
             return tx_hash
 
     async def _on_rabbitmq_message(self, message: IncomingMessage):
         """
-        Process incoming RabbitMQ messages and handle batch submissions and reward updates.
+        Process incoming RabbitMQ messages and handle batch submissions and
+        reward updates.
 
         This method processes two types of messages:
         1. BatchSubmissionRequest - For submitting batches of snapshots
@@ -446,8 +510,8 @@ class TxWorker(GenericAsyncWorker):
         - Submits the reward update transaction directly
 
         Args:
-            message (IncomingMessage): The incoming RabbitMQ message containing either a
-                BatchSubmissionRequest or UpdateRewardsRequest payload
+            message (IncomingMessage): The incoming RabbitMQ message containing
+                either a BatchSubmissionRequest or UpdateRewardsRequest payload
 
         Returns:
             None
@@ -457,7 +521,8 @@ class TxWorker(GenericAsyncWorker):
         await self.init()
 
         try:
-            # Parse message payload - try BatchSubmissionRequest first, then UpdateRewardsRequest
+            # Parse message payload - try BatchSubmissionRequest first, then
+            # UpdateRewardsRequest
             try:
                 msg_obj = BatchSubmissionRequest.parse_raw(message.body)
                 self._logger.debug('Parsed message as BatchSubmissionRequest')
@@ -502,13 +567,17 @@ class TxWorker(GenericAsyncWorker):
                             # End batch if size threshold reached
                             if int(set_size) >= int(batch_size):
                                 txn_payload = EndBatchRequest(
-                                    dataMarketAddress=msg_obj.dataMarketAddress,
+                                    dataMarketAddress=(
+                                        msg_obj.dataMarketAddress
+                                    ),
                                     epochID=msg_obj.epochID,
                                 )
                                 await self.end_batch(txn_payload=txn_payload)
                 else:
                     # Handle reward update request
-                    tx_hash = await self.submit_update_rewards(txn_payload=msg_obj)
+                    tx_hash = await self.submit_update_rewards(
+                        txn_payload=msg_obj,
+                    )
             except Exception as e:
                 self._logger.opt(exception=True).error(
                     'Error submitting batch or reward update. Error: {}',
