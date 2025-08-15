@@ -225,7 +225,10 @@ class TxWorker(GenericAsyncWorker):
                     'Snapshot batch already submitted. Skipping...',
                 )
                 return ''
-            elif 'nonce too low' in str(e):
+            elif (
+                'nonce too low' in str(e).lower() or
+                'nonce too high' in str(e).lower()
+            ):
                 error = eval(str(e))
                 message = error['message']
                 if 'next nonce' in message:
@@ -235,7 +238,7 @@ class TxWorker(GenericAsyncWorker):
                         )[1].split(',')[0],
                     )
                     self._logger.info(
-                        'Nonce too low error. Next nonce: {}', next_nonce,
+                        'Nonce error. Next nonce: {}', next_nonce,
                     )
                     await self._reset_nonce(next_nonce)
                     raise Exception('nonce error, reset nonce')
@@ -243,12 +246,15 @@ class TxWorker(GenericAsyncWorker):
                 elif 'state:' in message:
                     next_nonce = int(message.split('state: ')[1])
                     self._logger.info(
-                        'Nonce too low error. Next nonce: {}', next_nonce,
+                        'Nonce error. Correct nonce: {}', next_nonce,
                     )
                     await self._reset_nonce(next_nonce)
                     raise Exception('nonce error, reset nonce')
 
                 else:
+                    self._logger.info(
+                        'Nonce error detected, resetting to blockchain value',
+                    )
                     await self._reset_nonce()
                     raise Exception('nonce error, reset nonce')
 
@@ -338,7 +344,10 @@ class TxWorker(GenericAsyncWorker):
 
         except Exception as e:
             # Handle nonce errors
-            if 'nonce too low' in str(e):
+            if (
+                'nonce too low' in str(e).lower() or
+                'nonce too high' in str(e).lower()
+            ):
                 error = eval(str(e))
                 message = error['message']
                 if 'next nonce' in message:
@@ -348,7 +357,7 @@ class TxWorker(GenericAsyncWorker):
                         )[1].split(',')[0],
                     )
                     self._logger.info(
-                        'Nonce too low error. Next nonce: {}', next_nonce,
+                        'Nonce error. Next nonce: {}', next_nonce,
                     )
                     await self._reset_nonce(next_nonce)
                     raise Exception('nonce error, reset nonce')
@@ -356,12 +365,15 @@ class TxWorker(GenericAsyncWorker):
                 elif 'state:' in message:
                     next_nonce = int(message.split('state: ')[1])
                     self._logger.info(
-                        'Nonce too low error. Next nonce: {}', next_nonce,
+                        'Nonce error. Correct nonce: {}', next_nonce,
                     )
                     await self._reset_nonce(next_nonce)
                     raise Exception('nonce error, reset nonce')
 
                 else:
+                    self._logger.info(
+                        'Nonce error detected, resetting to blockchain value',
+                    )
                     await self._reset_nonce()
                     raise Exception('nonce error, reset nonce')
             else:
@@ -467,7 +479,10 @@ class TxWorker(GenericAsyncWorker):
 
         except Exception as e:
             # Handle nonce errors
-            if 'nonce too low' in str(e):
+            if (
+                'nonce too low' in str(e).lower() or
+                'nonce too high' in str(e).lower()
+            ):
                 error = eval(str(e))
                 message = error['message']
                 if 'next nonce' in message:
@@ -477,7 +492,7 @@ class TxWorker(GenericAsyncWorker):
                         )[1].split(',')[0],
                     )
                     self._logger.info(
-                        'Nonce too low error. Next nonce: {}', next_nonce,
+                        'Nonce error. Next nonce: {}', next_nonce,
                     )
                     await self._reset_nonce(next_nonce)
                     raise Exception('nonce error, reset nonce')
@@ -485,12 +500,15 @@ class TxWorker(GenericAsyncWorker):
                 elif 'state:' in message:
                     next_nonce = int(message.split('state: ')[1])
                     self._logger.info(
-                        'Nonce too low error. Next nonce: {}', next_nonce,
+                        'Nonce error. Correct nonce: {}', next_nonce,
                     )
                     await self._reset_nonce(next_nonce)
                     raise Exception('nonce error, reset nonce')
 
                 else:
+                    self._logger.info(
+                        'Nonce error detected, resetting to blockchain value',
+                    )
                     await self._reset_nonce()
                     raise Exception('nonce error, reset nonce')
             else:
