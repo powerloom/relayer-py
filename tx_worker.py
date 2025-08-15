@@ -341,12 +341,29 @@ class TxWorker(GenericAsyncWorker):
             if 'nonce too low' in str(e):
                 error = eval(str(e))
                 message = error['message']
-                next_nonce = int(message.split('next nonce ')[1].split(',')[0])
-                self._logger.info(
-                    'Nonce too low error. Next nonce: {}', next_nonce,
-                )
-                await self._reset_nonce(next_nonce)
-                raise Exception('nonce error, reset nonce')
+                if 'next nonce' in message:
+                    next_nonce = int(
+                        message.split(
+                            'next nonce ',
+                        )[1].split(',')[0],
+                    )
+                    self._logger.info(
+                        'Nonce too low error. Next nonce: {}', next_nonce,
+                    )
+                    await self._reset_nonce(next_nonce)
+                    raise Exception('nonce error, reset nonce')
+
+                elif 'state:' in message:
+                    next_nonce = int(message.split('state: ')[1])
+                    self._logger.info(
+                        'Nonce too low error. Next nonce: {}', next_nonce,
+                    )
+                    await self._reset_nonce(next_nonce)
+                    raise Exception('nonce error, reset nonce')
+
+                else:
+                    await self._reset_nonce()
+                    raise Exception('nonce error, reset nonce')
             else:
                 self._logger.info(
                     'Error submitting snapshot. Retrying...',
