@@ -343,8 +343,13 @@ class TxWorker(GenericAsyncWorker):
                 )
 
         except Exception as e:
+            if 'E47' in str(e) or 'E48' in str(e):
+                self._logger.info(
+                    'Update rewards already called. Skipping...',
+                )
+                return ''
             # Handle nonce errors
-            if (
+            elif (
                 'nonce too low' in str(e).lower() or
                 'nonce too high' in str(e).lower()
             ):
