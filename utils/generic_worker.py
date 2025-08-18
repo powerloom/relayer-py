@@ -22,7 +22,10 @@ from eip712_structs import String
 from eip712_structs import Uint
 from eth_typing import ChecksumAddress
 from eth_utils.crypto import keccak
+from httpx import AsyncClient
 from httpx import AsyncHTTPTransport
+from httpx import Limits
+from httpx import Timeout
 from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
 from web3 import Web3
@@ -231,6 +234,22 @@ class GenericAsyncWorker(multiprocessing.Process):
 
         # Get current gas price
         self._last_gas_price = await self._w3.eth.gas_price
+
+    async def _init_httpx_client(self):
+        """
+        Initializes the Telegram client.
+        """
+        self._http_client = AsyncClient(
+            timeout=Timeout(timeout=30),
+            follow_redirects=False,
+            transport=AsyncHTTPTransport(
+                limits=Limits(
+                    max_connections=10,
+                    max_keepalive_connections=5,
+                    keepalive_expiry=None,
+                ),
+            ),
+        )
 
     async def init(self):
         """

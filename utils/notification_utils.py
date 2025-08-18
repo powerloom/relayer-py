@@ -33,38 +33,36 @@ def misc_notification_callback_result_handler(fut: asyncio.Future):
         logger.debug('Callback or notification result: {}', r)
 
 
-async def send_reporting(message: BaseModel):
-    async with AsyncClient() as client:
-        try:
-            resp = await client.post(
-                url=settings.reporting.service_url,
-                json=message.dict(),
-            )
-            logger.debug(
-                'Reporting service notification sent: {}',
-                resp.status_code,
-            )
-        except Exception as e:
-            logger.opt(exception=True).error(
-                'Exception while sending reporting service notification: {}', e,
-            )
+async def send_reporting(client: AsyncClient, message: BaseModel):
+    try:
+        resp = await client.post(
+            url=settings.reporting.service_url,
+            json=message.dict(),
+        )
+        logger.debug(
+            'Reporting service notification sent: {}',
+            resp.status_code,
+        )
+    except Exception as e:
+        logger.opt(exception=True).error(
+            'Exception while sending reporting service notification: {}', e,
+        )
 
 
-async def send_slack(message: BaseModel):
-    async with AsyncClient() as client:
-        try:
-            resp = await client.post(
-                url=settings.reporting.slack_url,
-                json=message.dict(),
-            )
-            logger.debug('Slack notification sent: {}', resp.status_code)
-        except Exception as e:
-            logger.opt(exception=True).error(
-                'Exception while sending Slack notification: {}', e,
-            )
+async def send_slack(client: AsyncClient, message: BaseModel):
+    try:
+        resp = await client.post(
+            url=settings.reporting.slack_url,
+            json=message.dict(),
+        )
+        logger.debug('Slack notification sent: {}', resp.status_code)
+    except Exception as e:
+        logger.opt(exception=True).error(
+            'Exception while sending Slack notification: {}', e,
+        )
 
 
-async def send_failure_notifications(message: BaseModel):
+async def send_failure_notifications(client: AsyncClient, message: BaseModel):
     """
     Send failure notifications to configured services.
 
@@ -81,10 +79,10 @@ async def send_failure_notifications(message: BaseModel):
     """
     # Send notification to reporting service if URL is configured
     if settings.reporting.service_url:
-        fut = asyncio.ensure_future(send_reporting(message))
+        fut = asyncio.ensure_future(send_reporting(client, message))
         fut.add_done_callback(misc_notification_callback_result_handler)
 
     # Send notification to Slack if URL is configured
     if settings.reporting.slack_url:
-        fut = asyncio.ensure_future(send_slack(message))
+        fut = asyncio.ensure_future(send_slack(client, message))
         fut.add_done_callback(misc_notification_callback_result_handler)

@@ -627,7 +627,10 @@ class TxWorker(GenericAsyncWorker):
                     error=str(e),
                     raw_payload=str(msg_obj.dict()),
                 )
-                await send_failure_notifications(message=error_message)
+                await send_failure_notifications(
+                    client=self._http_client,
+                    message=error_message,
+                )
 
 
 if __name__ == '__main__':
