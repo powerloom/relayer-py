@@ -1,5 +1,6 @@
-from settings.conf import settings
 from eth_account import Account
+
+from settings.conf import settings
 
 # Chain ID for the anchor chain, retrieved from settings
 CHAIN_ID = settings.anchor_chain.chain_id
@@ -35,14 +36,14 @@ async def write_transaction(
     # Construct the transaction
     transaction = await func(*args).build_transaction({
         'from': from_address,
-        'gas': 20000000,  # Fixed gas limit
+        'gas': 40000000,  # Fixed gas limit
         'maxFeePerGas': 2 * gas_price,  # Maximum fee per gas
         # Priority fee increases by 10% of the gas price on each retry
         'maxPriorityFeePerGas': int((priority_gas_multiplier + 1) * 0.1 * gas_price),
         'nonce': nonce,
         'chainId': CHAIN_ID,
     })
-    
+
     # Sign the transaction
     signed_transaction = w3.eth.account.sign_transaction(
         transaction, private_key,
