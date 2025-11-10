@@ -220,41 +220,42 @@ class TxWorker(GenericAsyncWorker):
             # Extract error code from ContractLogicError
             error_code = self._extract_error_code(gas_error)
             
-            # Log detailed error information with full payload
+            # Log detailed error information WITHOUT full payload (reduces verbosity)
             self._logger.error(
                 'Gas estimation failed with ContractLogicError (contract would revert) | '
-                'Error: {} | Error code: {} | '
-                'Payload: dataMarket={}, batchCID={}, epochID={}, '
-                'projectIDs={}, snapshotCIDs={}, finalizedCIDsRootHash={}, '
-                'signer={}',
-                gas_error,
+                'Error code: {} | batchCID={} | epochID={} | '
+                'dataMarket={} | projectIDs={} | projectIDs_count={} | snapshotCIDs_count={} | signer={}',
                 error_code or 'UNKNOWN',
-                txn_payload.dataMarketAddress,
                 txn_payload.batchCID,
                 txn_payload.epochID,
+                txn_payload.dataMarketAddress,
                 list(txn_payload.projectIDs),
-                list(txn_payload.snapshotCIDs),
-                txn_payload.finalizedCIDsRootHash,
+                len(txn_payload.projectIDs),
+                len(txn_payload.snapshotCIDs),
                 self._signer_account,
             )
             
             # Handle specific error codes that are expected/skippable
             if error_code == 'E25':
                 self._logger.info(
-                    'Snapshot batch already submitted (E25). Skipping...',
+                    'Snapshot batch already submitted (E25) | batchCID={} | epochID={} | skipping',
+                    txn_payload.batchCID,
+                    txn_payload.epochID,
                 )
                 return ''
             elif error_code == 'E43':
                 self._logger.info(
-                    'Batch submissions already completed for epoch {} (E43). Skipping...',
+                    'Batch submissions already completed for epoch (E43) | epochID={} | skipping',
                     txn_payload.epochID,
                 )
                 return ''
             elif error_code == 'E04':
                 self._logger.error(
-                    'Signer {} is not registered as sequencer (E04). '
+                    'Signer {} is not registered as sequencer (E04) | batchCID={} | epochID={} | '
                     'Please add signer to sequencer set on contract.',
                     self._signer_account,
+                    txn_payload.batchCID,
+                    txn_payload.epochID,
                 )
                 raise Exception(
                     f'Signer {self._signer_account} is not a sequencer (E04). '
@@ -262,8 +263,9 @@ class TxWorker(GenericAsyncWorker):
                 ) from gas_error
             elif error_code == 'E23':
                 self._logger.error(
-                    'Project IDs and snapshot CIDs length mismatch (E23). '
-                    'projectIDs length: {}, snapshotCIDs length: {}',
+                    'Project IDs and snapshot CIDs length mismatch (E23) | epochID={} | '
+                    'projectIDs_count={} | snapshotCIDs_count={}',
+                    txn_payload.epochID,
                     len(txn_payload.projectIDs),
                     len(txn_payload.snapshotCIDs),
                 )
@@ -273,14 +275,15 @@ class TxWorker(GenericAsyncWorker):
                 ) from gas_error
             elif error_code == 'E24':
                 self._logger.error(
-                    'Project IDs and snapshot CIDs cannot be empty (E24)',
+                    'Project IDs and snapshot CIDs cannot be empty (E24) | epochID={}',
+                    txn_payload.epochID,
                 )
                 raise Exception('Project IDs and snapshot CIDs cannot be empty (E24)') from gas_error
             
             # For unknown error codes, raise with details
             raise Exception(
-                f'Contract logic error during gas estimation: {gas_error} '
-                f'(Error code: {error_code or "UNKNOWN"}). '
+                f'Contract logic error during gas estimation (Error code: {error_code or "UNKNOWN"}). '
+                f'batchCID={txn_payload.batchCID}, epochID={txn_payload.epochID}. '
                 f'Transaction would revert on-chain.'
             ) from gas_error
         
@@ -320,7 +323,16 @@ class TxWorker(GenericAsyncWorker):
         )
         
         self._logger.info(
-            f'Queued batch submission transaction {tx_id} for epochID: {txn_payload.epochID}',
+            'Queued batch submission transaction | '
+            'tx_id={} | batchCID={} | epochID={} | '
+            'dataMarket={} | projectIDs={} | projectIDs_count={} | snapshotCIDs_count={}',
+            tx_id,
+            txn_payload.batchCID,
+            txn_payload.epochID,
+            txn_payload.dataMarketAddress,
+            list(txn_payload.projectIDs),
+            len(txn_payload.projectIDs),
+            len(txn_payload.snapshotCIDs),
         )
         
         # Fire-and-forget: return tx_id immediately
@@ -621,42 +633,116 @@ class TxWorker(GenericAsyncWorker):
             try:
                 if isinstance(msg_obj, BatchSubmissionRequest):
                     # Handle batch submission request
+                    self._logger.info(
+                        'Processing batch submission request | '
+                        'batchCID={} | epochID={} | dataMarket={} | '
+                        'projectIDs={} | projectIDs_count={} | snapshotCIDs_count={}',
+                        msg_obj.batchCID,
+                        msg_obj.epochID,
+                        msg_obj.dataMarketAddress,
+                        list(msg_obj.projectIDs),
+                        len(msg_obj.projectIDs),
+                        len(msg_obj.snapshotCIDs),
+                    )
+                    
                     tx_id = await self.submit_batch(txn_payload=msg_obj)
                     if tx_id != '':
                         # Get configured batch size for this epoch
                         batch_size = await self.writer_redis_pool.get(
                             epoch_batch_size(msg_obj.epochID),
                         )
+                        
                         if batch_size:
+                            batch_size_int = int(batch_size)
+                            self._logger.info(
+                                'Batch tracking | epochID={} | configured_batch_size={}',
+                                msg_obj.epochID,
+                                batch_size_int,
+                            )
+                            
                             # Track this submission by tx_id (fire-and-forget mode)
                             # tx_hash will be available later via tx_queue.get_status(tx_id)
                             await self.writer_redis_pool.sadd(
                                 epoch_batch_submissions(msg_obj.epochID),
                                 tx_id,  # Use tx_id instead of tx_hash for tracking
                             )
+                            
                             # Get current submission count
                             set_size = await self.writer_redis_pool.scard(
                                 epoch_batch_submissions(msg_obj.epochID),
                             )
+                            set_size_int = int(set_size)
+                            
+                            self._logger.info(
+                                'Batch submission tracked | epochID={} | tx_id={} | '
+                                'current_submissions={} | required_batch_size={} | '
+                                'remaining={}',
+                                msg_obj.epochID,
+                                tx_id,
+                                set_size_int,
+                                batch_size_int,
+                                max(0, batch_size_int - set_size_int),
+                            )
+                            
                             # End batch if size threshold reached
-                            if int(set_size) >= int(batch_size):
+                            if set_size_int >= batch_size_int:
+                                self._logger.info(
+                                    'Batch size threshold reached | epochID={} | '
+                                    'submissions={} | threshold={} | triggering end_batch',
+                                    msg_obj.epochID,
+                                    set_size_int,
+                                    batch_size_int,
+                                )
                                 txn_payload = EndBatchRequest(
-                                    dataMarketAddress=(
-                                        msg_obj.dataMarketAddress
-                                    ),
+                                    dataMarketAddress=msg_obj.dataMarketAddress,
                                     epochID=msg_obj.epochID,
                                 )
                                 await self.end_batch(txn_payload=txn_payload)
+                        else:
+                            self._logger.debug(
+                                'No batch size configured for epochID={}, skipping batch tracking',
+                                msg_obj.epochID,
+                            )
                 else:
                     # Handle reward update request
                     tx_id = await self.submit_update_rewards(
                         txn_payload=msg_obj,
                     )
             except Exception as e:
-                self._logger.opt(exception=True).error(
-                    'Error submitting batch or reward update. Error: {}',
-                    e,
+                # Log error without full exception traceback to reduce verbosity
+                # Include key identifiers for debugging
+                error_summary = str(e)[:500]  # Limit error message length
+                if isinstance(msg_obj, BatchSubmissionRequest):
+                    self._logger.error(
+                        'Error submitting batch | batchCID={} | epochID={} | '
+                        'dataMarket={} | projectIDs={} | error={}',
+                        msg_obj.batchCID,
+                        msg_obj.epochID,
+                        msg_obj.dataMarketAddress,
+                        list(msg_obj.projectIDs),
+                        error_summary,
+                    )
+                elif isinstance(msg_obj, UpdateRewardsRequest):
+                    self._logger.error(
+                        'Error submitting update rewards | dataMarket={} | day={} | '
+                        'slotIDs_count={} | error={}',
+                        msg_obj.dataMarketAddress,
+                        msg_obj.day,
+                        len(msg_obj.slotIDs),
+                        error_summary,
+                    )
+                else:
+                    self._logger.error(
+                        'Error submitting transaction | error={}',
+                        error_summary,
+                    )
+                
+                # Log full exception details at DEBUG level for deep debugging
+                self._logger.opt(exception=True).debug(
+                    'Full exception details for error: {}',
+                    error_summary,
                 )
+                
                 error_message = ErrorMessage(
                     error=str(e),
                     raw_payload=str(msg_obj.dict()),
