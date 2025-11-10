@@ -558,7 +558,7 @@ class TxWorker(GenericAsyncWorker):
             end_batch_submission_called(
                 txn_payload.dataMarketAddress, txn_payload.epochID,
             ),
-            True,
+            '1',  # Redis requires string/int/bytes, not bool
             ex=3600,
         )
         
@@ -661,10 +661,16 @@ class TxWorker(GenericAsyncWorker):
                     error=str(e),
                     raw_payload=str(msg_obj.dict()),
                 )
-                await send_failure_notifications(
-                    client=self._http_client,
-                    message=error_message,
-                )
+                # Only send notifications if http_client is initialized
+                if hasattr(self, '_http_client') and self._http_client:
+                    await send_failure_notifications(
+                        client=self._http_client,
+                        message=error_message,
+                    )
+                else:
+                    self._logger.warning(
+                        'Cannot send failure notifications: http_client not initialized',
+                    )
 
 
 if __name__ == '__main__':
