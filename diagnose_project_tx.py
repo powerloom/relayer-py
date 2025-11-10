@@ -158,28 +158,6 @@ async def query_last_sequencer_finalized_snapshot(
         return 0
 
 
-async def query_last_finalized_snapshot(
-    w3: AsyncWeb3,
-    protocol_state_address: str,
-    data_market_address: str,
-    project_id: str,
-    abi: List[Dict],
-) -> int:
-    """Query lastFinalizedSnapshot from contract."""
-    contract = w3.eth.contract(
-        address=Web3.to_checksum_address(protocol_state_address),
-        abi=abi
-    )
-    
-    try:
-        result = await contract.functions.lastFinalizedSnapshot(
-            Web3.to_checksum_address(data_market_address),
-            project_id
-        ).call()
-        return result
-    except Exception as e:
-        print(f"Error querying lastFinalizedSnapshot: {e}")
-        return 0
 
 
 async def diagnose_project_transactions():
@@ -290,30 +268,26 @@ async def diagnose_project_transactions():
     last_sequencer_finalized = await query_last_sequencer_finalized_snapshot(
         w3, protocol_state_address, data_market_address, project_id, abi
     )
-    last_finalized = await query_last_finalized_snapshot(
-        w3, protocol_state_address, data_market_address, project_id, abi
-    )
     
     print(f"lastSequencerFinalizedSnapshot: {last_sequencer_finalized}")
-    print(f"lastFinalizedSnapshot: {last_finalized}")
     print()
     
     print("=" * 80)
     print("Querying Contract Events")
     print("=" * 80)
     
-    # Query SnapshotBatchAttestationSubmitted events
-    print("Querying SnapshotBatchAttestationSubmitted events...")
-    attestation_events = await get_contract_events(
+    # Query SnapshotBatchSubmitted events (emitted when submitSubmissionBatch is called)
+    print("Querying SnapshotBatchSubmitted events...")
+    batch_submitted_events = await get_contract_events(
         w3,
         protocol_state_address,
-        'SnapshotBatchAttestationSubmitted',
+        'SnapshotBatchSubmitted',
         abi,
         from_block,
         to_block,
         data_market_address=data_market_address,
     )
-    print(f"Found {len(attestation_events)} SnapshotBatchAttestationSubmitted events")
+    print(f"Found {len(batch_submitted_events)} SnapshotBatchSubmitted events")
     
     # Query SnapshotBatchFinalized events
     print("Querying SnapshotBatchFinalized events...")
@@ -351,7 +325,7 @@ async def diagnose_project_transactions():
     # Collect unique transaction hashes
     tx_hashes = set()
     
-    for event in attestation_events:
+    for event in batch_submitted_events:
         tx_hash = event.get('transactionHash')
         if tx_hash:
             tx_hashes.add(tx_hash.hex() if hasattr(tx_hash, 'hex') else tx_hash)
@@ -496,7 +470,6 @@ async def diagnose_project_transactions():
     print()
     print(f"Contract State:")
     print(f"  lastSequencerFinalizedSnapshot: {last_sequencer_finalized}")
-    print(f"  lastFinalizedSnapshot: {last_finalized}")
     print()
     
     if last_sequencer_finalized == 0:
