@@ -19,6 +19,12 @@ services:
       - 8080:8080
     command:
       bash -c "sh init_processes.sh"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+        compress: "true"
 
   redis:
     command: redis-server --appendonly yes
@@ -34,6 +40,12 @@ services:
       retries: 3
       start_period: 30s
     restart: on-failure
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
 
   rabbitmq:
     image: rabbitmq:3-management
@@ -51,3 +63,9 @@ services:
       retries: 3
       start_period: 30s
     restart: on-failure
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+        compress: "true"
