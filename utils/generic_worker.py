@@ -36,6 +36,7 @@ from utils.default_logger import logger
 from utils.helpers import get_rabbitmq_channel
 from utils.helpers import get_rabbitmq_robust_connection_async
 from utils.redis_conn import RedisPool
+from utils.tx_queue import TransactionQueue
 
 # Day buffer to account for chain migration or other issues
 DAY_BUFFER = 36
@@ -100,6 +101,7 @@ class GenericAsyncWorker(multiprocessing.Process):
         self._worker_idx = int(os.environ['NODE_APP_INSTANCE'])
         self._initialized = False
         self.protocol_state_contract_instance_mapping = {}
+        self._ev_loop = None  # Store event loop reference for cleanup
 
     def _signal_handler(self, signum, frame):
         """
@@ -111,6 +113,11 @@ class GenericAsyncWorker(multiprocessing.Process):
         """
         if signum in [SIGINT, SIGTERM, SIGQUIT]:
             self._core_rmq_consumer.cancel()
+            # Cleanup transaction queue if initialized (schedule in event loop)
+            if hasattr(self, 'tx_queue') and self.tx_queue and self._ev_loop:
+                self._ev_loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(self.tx_queue.stop())
+                )
 
     async def get_protocol_state_contract(self, contract_address: str):
         """
@@ -234,6 +241,20 @@ class GenericAsyncWorker(multiprocessing.Process):
 
         # Get current gas price
         self._last_gas_price = await self._w3.eth.gas_price
+        
+        # Initialize transaction queue with proper nonce management
+        # Mode controlled by settings.tx_queue_wait_for_receipt
+        # False = fire-and-forget (default): transactions return immediately, receipt handled in background
+        # True = wait-for-receipt: wait for receipt confirmation before returning
+        self.tx_queue = TransactionQueue(
+            max_size=100,
+            service_name=f'Relayer-Worker{self._worker_idx}',
+            wait_for_receipt=settings.tx_queue_wait_for_receipt,
+        )
+        await self.tx_queue.start(initial_nonce=self._signer_nonce)
+        logger.info(
+            f'Transaction queue initialized for worker {self._worker_idx} with initial nonce: {self._signer_nonce}',
+        )
 
     async def _init_httpx_client(self):
         """
@@ -284,6 +305,7 @@ class GenericAsyncWorker(multiprocessing.Process):
         # Set up and run the event loop
         asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
         ev_loop = asyncio.get_event_loop()
+        self._ev_loop = ev_loop  # Store reference for signal handler
         self._logger.debug(
             f'Starting asynchronous callback worker {self._unique_id}...',
         )
@@ -293,4 +315,7 @@ class GenericAsyncWorker(multiprocessing.Process):
         try:
             ev_loop.run_forever()
         finally:
+            # Cleanup transaction queue on shutdown
+            if hasattr(self, 'tx_queue') and self.tx_queue:
+                ev_loop.run_until_complete(self.tx_queue.stop())
             ev_loop.close()
