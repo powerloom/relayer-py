@@ -54,5 +54,6 @@
         }
     ],
 	"min_signer_balance_eth": 1,
-	"auth_token": ""
+	"auth_token": "",
+	"tx_queue_wait_for_receipt": false
 }

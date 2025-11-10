@@ -106,6 +106,7 @@ class SettingsConf(BaseModel):
     signers: List[Signer]
     min_signer_balance_eth: int
     auth_token: str
+    tx_queue_wait_for_receipt: bool = False  # If True, wait for receipt confirmation before returning (default: False = fire-and-forget)
 
 
 class ProcessorWorkerDetails(BaseModel):

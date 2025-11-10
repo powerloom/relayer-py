@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  mock-rpc:
+    build: .
+    ports:
+      - "8545:8545"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    networks:
+      - test-network
+
+networks:
+  test-network:
+    driver: bridge
+
