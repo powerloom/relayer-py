@@ -246,10 +246,16 @@ class GenericAsyncWorker(multiprocessing.Process):
         # Mode controlled by settings.tx_queue_wait_for_receipt
         # False = fire-and-forget (default): transactions return immediately, receipt handled in background
         # True = wait-for-receipt: wait for receipt confirmation before returning
+        # Create status callback for batch submission tracking (if worker has the method)
+        status_callback = None
+        if hasattr(self, '_tx_status_callback'):
+            status_callback = self._tx_status_callback
+        
         self.tx_queue = TransactionQueue(
             max_size=100,
             service_name=f'Relayer-Worker{self._worker_idx}',
             wait_for_receipt=settings.tx_queue_wait_for_receipt,
+            status_callback=status_callback,
         )
         await self.tx_queue.start(initial_nonce=self._signer_nonce)
         logger.info(

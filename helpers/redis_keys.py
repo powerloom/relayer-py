@@ -56,3 +56,26 @@ def end_batch_submission_called(data_market, epoch_id):
     and data market.
     """
     return f'end_batch_submission_called:{data_market}:{epoch_id}'
+
+
+def batch_submission_tx_key(tx_id):
+    """
+    Generate a Redis key for storing batch submission transaction metadata.
+    
+    Args:
+        tx_id (str): The transaction ID.
+        
+    Returns:
+        str: A Redis key string for batch submission transaction metadata.
+    """
+    return f'batch_submission:tx:{tx_id}'
+
+
+def batch_submissions_recent_key():
+    """
+    Generate a Redis key for storing recent batch submission transaction IDs in a sorted set.
+    
+    Returns:
+        str: A Redis key string for recent batch submissions sorted set.
+    """
+    return 'batch_submissions:recent'

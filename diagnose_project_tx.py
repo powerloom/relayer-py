@@ -59,6 +59,8 @@ async def get_contract_events(
     """
     Query contract events from blockchain.
     
+    Uses indexed parameter filtering (topics) for efficient querying when possible.
+    
     Args:
         w3: Web3 instance
         contract_address: Contract address
@@ -66,8 +68,8 @@ async def get_contract_events(
         abi: Contract ABI
         from_block: Starting block number
         to_block: Ending block number
-        data_market_address: Optional filter for dataMarketAddress
-        epoch_id: Optional filter for epochId
+        data_market_address: Optional filter for dataMarketAddress (indexed)
+        epoch_id: Optional filter for epochId (indexed)
         
     Returns:
         List of event logs
@@ -84,27 +86,80 @@ async def get_contract_events(
     if not event_abi:
         return []
     
-    # Build event filter
-    event_filter = contract.events[event_name].create_filter(
-        fromBlock=from_block,
-        toBlock=to_block
-    )
+    # Build filter arguments with indexed parameter filtering
+    filter_args = {
+        'fromBlock': from_block,
+        'toBlock': to_block,
+    }
+    
+    # Use indexed parameter filtering if available
+    # dataMarketAddress is typically the first indexed parameter
+    # epochId is typically the second indexed parameter
+    argument_filters = {}
+    if data_market_address:
+        # Find which input is dataMarketAddress
+        for i, input_item in enumerate(event_abi.get('inputs', [])):
+            if input_item.get('name') == 'dataMarketAddress' and input_item.get('indexed'):
+                argument_filters[input_item['name']] = Web3.to_checksum_address(data_market_address)
+                break
+    
+    if epoch_id is not None:
+        # Find which input is epochId
+        for i, input_item in enumerate(event_abi.get('inputs', [])):
+            if input_item.get('name') == 'epochId' and input_item.get('indexed'):
+                argument_filters[input_item['name']] = epoch_id
+                break
+    
+    # Build event filter with argument filters (uses indexed parameters)
+    try:
+        if argument_filters:
+            event_filter = await contract.events[event_name].create_filter(
+                argument_filters=argument_filters,
+                **filter_args
+            )
+        else:
+            event_filter = await contract.events[event_name].create_filter(**filter_args)
+    except Exception as e:
+        print(f"Error creating event filter for {event_name} on {contract_address}: {e}")
+        return []
     
     # Get events
     try:
         events = await event_filter.get_all_entries()
     except Exception as e:
-        print(f"Error fetching events: {e}")
+        print(f"Error fetching events for {event_name} on {contract_address}: {e}")
         return []
     
-    # Filter by data_market_address if provided
-    if data_market_address:
+    # Additional filtering for non-indexed parameters (shouldn't be needed if indexed filtering worked)
+    if data_market_address or epoch_id is not None:
         filtered_events = []
         for event in events:
             args = event.get('args', {})
-            if args.get('dataMarketAddress', '').lower() == data_market_address.lower():
-                if epoch_id is None or args.get('epochId') == epoch_id:
-                    filtered_events.append(event)
+            match = True
+            
+            if data_market_address:
+                event_dm = args.get('dataMarketAddress', '')
+                if isinstance(event_dm, str):
+                    if event_dm.lower() != data_market_address.lower():
+                        match = False
+                elif hasattr(event_dm, 'lower'):
+                    if event_dm.lower() != data_market_address.lower():
+                        match = False
+                else:
+                    # Try to convert to checksum address and compare
+                    try:
+                        if Web3.to_checksum_address(str(event_dm)).lower() != Web3.to_checksum_address(data_market_address).lower():
+                            match = False
+                    except:
+                        match = False
+            
+            if epoch_id is not None and match:
+                if args.get('epochId') != epoch_id:
+                    match = False
+            
+            if match:
+                filtered_events.append(event)
+        
         return filtered_events
     
     return list(events)
@@ -132,6 +187,42 @@ async def get_transaction(w3: AsyncWeb3, tx_hash: str) -> Optional[Dict]:
     except Exception as e:
         print(f"Error fetching transaction {tx_hash}: {e}")
         return None
+
+
+async def check_contract_conditions(
+    w3: AsyncWeb3,
+    protocol_state_address: str,
+    data_market_address: str,
+    abi: List[Dict],
+    signer_address: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Check contract conditions that might cause transaction reverts.
+    
+    Returns:
+        Dict with diagnostic information
+    """
+    contract = w3.eth.contract(
+        address=Web3.to_checksum_address(protocol_state_address),
+        abi=abi
+    )
+    
+    diagnostics = {}
+    
+    try:
+        # Check if signer is a sequencer (if provided)
+        if signer_address:
+            try:
+                # Try to call isSequencer on DataMarket (via ProtocolState or directly)
+                # Note: This might not be available in ProtocolState ABI, so we'll try
+                diagnostics['signer_address'] = signer_address
+                diagnostics['signer_checksum'] = Web3.to_checksum_address(signer_address)
+            except Exception as e:
+                diagnostics['signer_check_error'] = str(e)
+    except Exception as e:
+        diagnostics['error'] = f'Error checking contract conditions: {e}'
+    
+    return diagnostics
 
 
 async def query_last_sequencer_finalized_snapshot(
@@ -272,13 +363,83 @@ async def diagnose_project_transactions():
     print(f"lastSequencerFinalizedSnapshot: {last_sequencer_finalized}")
     print()
     
+    # Check batch submission window (critical parameter that can cause reverts)
+    print("Checking batch submission window...")
+    try:
+        contract = w3.eth.contract(
+            address=Web3.to_checksum_address(protocol_state_address),
+            abi=abi
+        )
+        submission_window = await contract.functions.snapshotSubmissionWindow(
+            Web3.to_checksum_address(data_market_address)
+        ).call()
+        print(f"snapshotSubmissionWindow: {submission_window}")
+        if submission_window == 0:
+            print("  ⚠️  WARNING: snapshotSubmissionWindow is 0!")
+            print("     This will cause all batch submissions to revert.")
+            print("     Transactions cannot be submitted when window is 0.")
+        else:
+            print(f"  ✅ Window is set to {submission_window} blocks")
+    except Exception as e:
+        print(f"  Error checking submission window: {e}")
+    print()
+    
+    if SETTINGS_AVAILABLE and settings and settings.signers:
+        signer_addresses = [signer.address for signer in settings.signers]
+        print(f"Checking {len(signer_addresses)} relayer signers...")
+        
+        contract = w3.eth.contract(
+            address=Web3.to_checksum_address(protocol_state_address),
+            abi=abi
+        )
+        
+        # Check signer balances and transaction counts
+        for i, signer_addr in enumerate(signer_addresses[:3], 1):  # Check first 3
+            try:
+                checksum_addr = Web3.to_checksum_address(signer_addr)
+                balance = await w3.eth.get_balance(checksum_addr)
+                balance_eth = w3.from_wei(balance, 'ether')
+                tx_count = await w3.eth.get_transaction_count(checksum_addr)
+                
+                print(f"\nSigner {i}: {signer_addr}")
+                print(f"  Balance: {balance_eth} ETH")
+                print(f"  Transaction count (nonce): {tx_count}")
+                
+                if balance_eth < 0.01:
+                    print(f"  ⚠️  WARNING: Low balance! May cause transaction failures.")
+            except Exception as e:
+                print(f"  Error checking signer: {e}")
+    
+    print()
+    
     print("=" * 80)
     print("Querying Contract Events")
     print("=" * 80)
     
-    # Query SnapshotBatchSubmitted events (emitted when submitSubmissionBatch is called)
-    print("Querying SnapshotBatchSubmitted events...")
-    batch_submitted_events = await get_contract_events(
+    # First, check if there are ANY events at all (without filtering) to diagnose
+    print("Checking for ANY SnapshotBatchSubmitted events (no filters)...")
+    all_events_check = await get_contract_events(
+        w3,
+        protocol_state_address,
+        'SnapshotBatchSubmitted',
+        abi,
+        from_block,
+        to_block,
+        data_market_address=None,  # No filter
+        epoch_id=None,
+    )
+    print(f"Found {len(all_events_check)} total SnapshotBatchSubmitted events from ProtocolState (all data markets)")
+    
+    if len(all_events_check) > 0:
+        print("Sample events (first 3):")
+        for i, event in enumerate(all_events_check[:3], 1):
+            args = event.get('args', {})
+            print(f"  {i}. dataMarket={args.get('dataMarketAddress')}, epochID={args.get('epochId')}, batchCID={args.get('batchCid')}")
+    
+    # Query SnapshotBatchSubmitted events from ProtocolState with filtering
+    # Note: Events might be emitted from DataMarket when ProtocolState routes calls
+    print("\nQuerying SnapshotBatchSubmitted events from ProtocolState (filtered)...")
+    batch_submitted_events_ps = await get_contract_events(
         w3,
         protocol_state_address,
         'SnapshotBatchSubmitted',
@@ -287,42 +448,57 @@ async def diagnose_project_transactions():
         to_block,
         data_market_address=data_market_address,
     )
-    print(f"Found {len(batch_submitted_events)} SnapshotBatchSubmitted events")
+    print(f"Found {len(batch_submitted_events_ps)} SnapshotBatchSubmitted events from ProtocolState")
     
-    # Query SnapshotBatchFinalized events
-    print("Querying SnapshotBatchFinalized events...")
-    finalized_batch_events = await get_contract_events(
+    # Also query from DataMarket contract (events might be emitted there)
+    print("Querying SnapshotBatchSubmitted events from DataMarket (filtered)...")
+    batch_submitted_events_dm = await get_contract_events(
         w3,
-        protocol_state_address,
-        'SnapshotBatchFinalized',
+        data_market_address,
+        'SnapshotBatchSubmitted',
         abi,
         from_block,
         to_block,
         data_market_address=data_market_address,
     )
-    print(f"Found {len(finalized_batch_events)} SnapshotBatchFinalized events")
+    print(f"Found {len(batch_submitted_events_dm)} SnapshotBatchSubmitted events from DataMarket")
     
-    # Query SnapshotFinalized events (for individual project snapshots)
-    print("Querying SnapshotFinalized events...")
-    snapshot_finalized_events = await get_contract_events(
+    # Combine results
+    batch_submitted_events = batch_submitted_events_ps + batch_submitted_events_dm
+    print(f"Total SnapshotBatchSubmitted events (filtered): {len(batch_submitted_events)}")
+    
+    # Also query DelayedBatchSubmitted events (delayed submissions)
+    print("\nQuerying DelayedBatchSubmitted events from ProtocolState...")
+    delayed_batch_events_ps = await get_contract_events(
         w3,
         protocol_state_address,
-        'SnapshotFinalized',
+        'DelayedBatchSubmitted',
         abi,
         from_block,
         to_block,
         data_market_address=data_market_address,
     )
+    print(f"Found {len(delayed_batch_events_ps)} DelayedBatchSubmitted events from ProtocolState")
     
-    # Filter SnapshotFinalized events for this project ID
-    project_snapshot_events = [
-        e for e in snapshot_finalized_events
-        if e.get('args', {}).get('projectId') == project_id
-    ]
-    print(f"Found {len(project_snapshot_events)} SnapshotFinalized events for project ID")
+    # Also query from DataMarket
+    print("Querying DelayedBatchSubmitted events from DataMarket...")
+    delayed_batch_events_dm = await get_contract_events(
+        w3,
+        data_market_address,
+        'DelayedBatchSubmitted',
+        abi,
+        from_block,
+        to_block,
+        data_market_address=data_market_address,
+    )
+    print(f"Found {len(delayed_batch_events_dm)} DelayedBatchSubmitted events from DataMarket")
+    
+    # Combine delayed batch events
+    delayed_batch_events = delayed_batch_events_ps + delayed_batch_events_dm
+    print(f"Total DelayedBatchSubmitted events: {len(delayed_batch_events)}")
     print()
     
-    # Collect unique transaction hashes
+    # Collect unique transaction hashes from SnapshotBatchSubmitted and DelayedBatchSubmitted events
     tx_hashes = set()
     
     for event in batch_submitted_events:
@@ -330,19 +506,14 @@ async def diagnose_project_transactions():
         if tx_hash:
             tx_hashes.add(tx_hash.hex() if hasattr(tx_hash, 'hex') else tx_hash)
     
-    for event in finalized_batch_events:
-        tx_hash = event.get('transactionHash')
-        if tx_hash:
-            tx_hashes.add(tx_hash.hex() if hasattr(tx_hash, 'hex') else tx_hash)
-    
-    for event in project_snapshot_events:
+    for event in delayed_batch_events:
         tx_hash = event.get('transactionHash')
         if tx_hash:
             tx_hashes.add(tx_hash.hex() if hasattr(tx_hash, 'hex') else tx_hash)
     
     # Optionally search for transactions by scanning blocks (if events don't capture everything)
     # This is slow, so we only do it if no transactions were found from events
-    # or if explicitly requested
+    # and the block range is reasonable (< 5000 blocks)
     if len(tx_hashes) == 0 and (to_block - from_block) < 5000:
         print("No transactions found from events. Scanning blocks for transactions...")
         print("(This may take a while)")
@@ -388,8 +559,17 @@ async def diagnose_project_transactions():
         else:
             print("No transactions found from block scan")
     elif len(tx_hashes) == 0:
-        print("No transactions found from events, and block range is too large for scanning.")
-        print("Try narrowing the block range or check if the project ID is correct.")
+        print()
+        print("⚠️  No transactions found from events in the specified block range.")
+        print(f"   Searched blocks {from_block} to {to_block} ({to_block - from_block + 1} blocks)")
+        print()
+        print("   Possible reasons:")
+        print("   - The transaction hasn't been submitted yet")
+        print("   - The transaction occurred outside this block range")
+        print("   - The project ID might be incorrect")
+        print()
+        print("   To search a wider range, run the script again and specify a larger 'from_block'")
+        print("   (e.g., if you know the approximate block number, search from there)")
     
     print("=" * 80)
     print("Transaction Analysis")
@@ -444,15 +624,17 @@ async def diagnose_project_transactions():
             # Check events in receipt
             if receipt.get('logs'):
                 print(f"Events in receipt: {len(receipt['logs'])}")
-                # Decode events if possible
+                # Decode SnapshotBatchSubmitted events if possible
                 contract = w3.eth.contract(address=protocol_state_address, abi=abi)
                 for log in receipt['logs']:
                     try:
-                        decoded = contract.events.SnapshotFinalized().process_log(log)
-                        if decoded and decoded.get('args', {}).get('projectId') == project_id:
-                            print(f"  ✅ SnapshotFinalized event found for project ID!")
-                            print(f"     Epoch ID: {decoded['args'].get('epochId')}")
-                            print(f"     Snapshot CID: {decoded['args'].get('snapshotCid')}")
+                        decoded = contract.events.SnapshotBatchSubmitted().process_log(log)
+                        if decoded:
+                            args = decoded.get('args', {})
+                            if args.get('dataMarketAddress', '').lower() == data_market_address.lower():
+                                print(f"  ✅ SnapshotBatchSubmitted event found!")
+                                print(f"     Epoch ID: {args.get('epochId')}")
+                                print(f"     Batch CID: {args.get('batchCid')}")
                     except:
                         pass
         else:
@@ -486,8 +668,23 @@ async def diagnose_project_transactions():
             print("   Failed transactions were found:")
             for tx_hash in failed_txs:
                 print(f"     - {tx_hash}")
+            print()
+            print("   Common revert reasons:")
+            print("   - E04: Signer is not registered as sequencer")
+            print("   - E25: Snapshot batch already submitted")
+            print("   - E43: Batch submissions already completed for epoch")
+            print("   - E23: Project IDs and snapshot CIDs length mismatch")
+            print("   - E24: Project IDs and snapshot CIDs cannot be empty")
+            print("   - Insufficient gas or funds")
         else:
             print("   No successful transactions found in the block range.")
+            print()
+            print("   Possible reasons for no transactions:")
+            print("   - Transactions are reverting before being mined (check relayer logs for gas estimation errors)")
+            print("   - Transactions are being submitted but failing silently")
+            print("   - The block range doesn't cover when transactions were submitted")
+            print("   - Signers are not registered as sequencers (E04)")
+            print("   - Low signer balance causing transaction failures")
     else:
         print(f"✅ lastSequencerFinalizedSnapshot is {last_sequencer_finalized}")
         print("   A snapshot has been finalized for this project ID.")

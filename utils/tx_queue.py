@@ -38,6 +38,7 @@ class TransactionQueue:
         max_size: int = 100,
         service_name: str = "Relayer",
         wait_for_receipt: bool = False,
+        status_callback: Optional[Callable[[str, dict], None]] = None,
     ):
         """
         Initialize the transaction queue.
@@ -47,6 +48,7 @@ class TransactionQueue:
             service_name: Service name for logging (default: "Relayer")
             wait_for_receipt: If True, wait for receipt confirmation before returning.
                              If False (default), return immediately after submission (fire-and-forget)
+            status_callback: Optional callback function(tx_id, result_dict) called when transaction status changes
         """
         self._queue = asyncio.Queue(maxsize=max_size)
         self._processing = False
@@ -58,6 +60,7 @@ class TransactionQueue:
         self._tx_processor_task: Optional[asyncio.Task] = None
         self._service_name = service_name
         self._wait_for_receipt = wait_for_receipt
+        self._status_callback = status_callback
         
         # Bind logger with service name
         self._logger = logger.bind(service=f'PowerLoom|{service_name}|TX Queue')
@@ -249,6 +252,13 @@ class TransactionQueue:
             # Store result for tracking
             self._tx_results[tx_id] = result
             
+            # Call status callback if provided
+            if self._status_callback:
+                try:
+                    await self._status_callback(tx_id, result)
+                except Exception as callback_error:
+                    self._logger.warning(f'Status callback failed for {tx_id}: {callback_error}')
+            
             # Set future result immediately (for fire-and-forget mode)
             # Caller gets tx_hash right away, receipt comes later
             if not future.done():
@@ -261,8 +271,16 @@ class TransactionQueue:
                 self._logger.info(f'Transaction {tx_id} receipt received, status: {receipt["status"]}')
                 
                 # Update result dict with receipt (for get_status() later)
-                result['status'] = 'confirmed'
+                result['status'] = 'confirmed_success' if receipt['status'] == 1 else 'confirmed_failed'
                 result['receipt'] = receipt
+                result['receipt_status'] = receipt['status']
+                
+                # Call status callback if provided
+                if self._status_callback:
+                    try:
+                        await self._status_callback(tx_id, result)
+                    except Exception as callback_error:
+                        self._logger.warning(f'Status callback failed for {tx_id}: {callback_error}')
             
             # CRITICAL: Only increment nonce AFTER successful receipt confirmation
             if receipt and receipt['status'] == 1:

@@ -1,6 +1,8 @@
 import asyncio
+import json
 import random
 import re
+import time
 from typing import Optional
 
 import tenacity
@@ -17,6 +19,8 @@ from data_models import BatchSubmissionRequest
 from data_models import EndBatchRequest
 from data_models import ErrorMessage
 from data_models import UpdateRewardsRequest
+from helpers.redis_keys import batch_submission_tx_key
+from helpers.redis_keys import batch_submissions_recent_key
 from helpers.redis_keys import end_batch_submission_called
 from helpers.redis_keys import epoch_batch_size
 from helpers.redis_keys import epoch_batch_submissions
@@ -81,9 +85,46 @@ class TxWorker(GenericAsyncWorker):
             **kwargs: Additional keyword arguments for the GenericAsyncWorker.
         """
         self._q, self._rmq_routing = get_tx_send_q_routing_key()
+        self._batch_submission_metadata = {}  # tx_id -> metadata dict
         super(TxWorker, self).__init__(
             name=name, **kwargs,
         )
+    
+    async def _tx_status_callback(self, tx_id: str, result: dict):
+        """
+        Callback function called when transaction status changes.
+        Updates Redis with transaction status and receipt information.
+        
+        Args:
+            tx_id: Transaction ID
+            result: Transaction result dict with status, tx_hash, receipt, etc.
+        """
+        # Only process batch submission transactions
+        if tx_id not in self._batch_submission_metadata:
+            return
+        
+        metadata = self._batch_submission_metadata[tx_id]
+        
+        # Update metadata with current status
+        metadata['status'] = result.get('status', 'unknown')
+        metadata['tx_hash'] = result.get('tx_hash')
+        
+        if result.get('receipt'):
+            receipt = result['receipt']
+            metadata['receipt_status'] = receipt.get('status')
+            metadata['block_number'] = receipt.get('blockNumber')
+            metadata['gas_used'] = receipt.get('gasUsed')
+        
+        # Store updated metadata in Redis
+        try:
+            redis_key = batch_submission_tx_key(tx_id)
+            await self.writer_redis_pool.set(
+                redis_key,
+                json.dumps(metadata),
+                ex=604800,  # 7 days TTL
+            )
+        except Exception as e:
+            self._logger.warning(f'Failed to update Redis for tx {tx_id}: {e}')
 
     def _extract_error_code(self, error: Exception) -> Optional[str]:
         """
@@ -321,6 +362,46 @@ class TxWorker(GenericAsyncWorker):
                 txn_payload.finalizedCIDsRootHash,
             ),
         )
+        
+        # Store transaction metadata for tracking
+        timestamp = int(time.time())
+        metadata = {
+            'tx_id': tx_id,
+            'tx_hash': None,  # Will be updated by callback
+            'project_ids': list(txn_payload.projectIDs),
+            'epochID': txn_payload.epochID,
+            'batchCID': txn_payload.batchCID,
+            'dataMarket': txn_payload.dataMarketAddress,
+            'timestamp': timestamp,
+            'status': 'pending',
+            'receipt_status': None,
+            'block_number': None,
+            'gas_used': None,
+        }
+        
+        # Store in memory for callback
+        self._batch_submission_metadata[tx_id] = metadata
+        
+        # Store initial metadata in Redis
+        try:
+            redis_key = batch_submission_tx_key(tx_id)
+            await self.writer_redis_pool.set(
+                redis_key,
+                json.dumps(metadata),
+                ex=604800,  # 7 days TTL
+            )
+            
+            # Add to recent transactions sorted set (score = timestamp)
+            recent_key = batch_submissions_recent_key()
+            await self.writer_redis_pool.zadd(recent_key, {tx_id: timestamp})
+            
+            # Keep only last 1000 transactions (remove oldest if more than 1000)
+            count = await self.writer_redis_pool.zcard(recent_key)
+            if count > 1000:
+                # Remove oldest transactions (keep last 1000)
+                await self.writer_redis_pool.zremrangebyrank(recent_key, 0, count - 1001)
+        except Exception as e:
+            self._logger.warning(f'Failed to store transaction metadata in Redis for tx {tx_id}: {e}')
         
         self._logger.info(
             'Queued batch submission transaction | '

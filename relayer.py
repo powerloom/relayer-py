@@ -1,5 +1,7 @@
 import asyncio
+import json
 import uuid
+from collections import defaultdict
 from functools import partial
 from typing import Any
 from typing import Dict
@@ -20,6 +22,8 @@ from tenacity import wait_random_exponential
 from data_models import BatchSizeRequest
 from data_models import BatchSubmissionRequest
 from data_models import UpdateRewardsRequest
+from helpers.redis_keys import batch_submission_tx_key
+from helpers.redis_keys import batch_submissions_recent_key
 from helpers.redis_keys import epoch_batch_size
 from init_rabbitmq import get_core_exchange_name
 from init_rabbitmq import get_tx_send_q_routing_key
@@ -328,4 +332,77 @@ async def submit_update_rewards_submission(
         return JSONResponse(
             status_code=500,
             content={'message': 'Invalid request payload!'},
+        )
+
+
+@app.get('/diagnose/batch-submissions')
+async def get_batch_submissions_diagnostic(request: FastAPIRequest):
+    """
+    Diagnostic endpoint to view the last ~1000 batch submission transactions,
+    grouped by project ID, with transaction receipt status.
+    
+    Returns:
+        JSONResponse: Dictionary with transactions grouped by project ID
+    """
+    try:
+        reader_redis = request.app.state.reader_redis_pool
+        
+        # Get recent transaction IDs from sorted set (last 1000, ordered by timestamp desc)
+        recent_key = batch_submissions_recent_key()
+        tx_ids = await reader_redis.zrevrange(recent_key, 0, 999)  # Get last 1000
+        
+        # Fetch metadata for each transaction
+        transactions = []
+        for tx_id in tx_ids:
+            if isinstance(tx_id, bytes):
+                tx_id = tx_id.decode('utf-8')
+            
+            redis_key = batch_submission_tx_key(tx_id)
+            metadata_json = await reader_redis.get(redis_key)
+            
+            if metadata_json:
+                try:
+                    if isinstance(metadata_json, bytes):
+                        metadata_json = metadata_json.decode('utf-8')
+                    metadata = json.loads(metadata_json)
+                    transactions.append(metadata)
+                except json.JSONDecodeError:
+                    service_logger.warning(f'Failed to decode metadata for tx {tx_id}')
+                    continue
+        
+        # Group transactions by project ID
+        by_project_id = defaultdict(list)
+        for tx in transactions:
+            project_ids = tx.get('project_ids', [])
+            for project_id in project_ids:
+                # Create a copy of transaction data for this project ID
+                tx_copy = {
+                    'tx_id': tx.get('tx_id'),
+                    'tx_hash': tx.get('tx_hash'),
+                    'status': tx.get('status'),
+                    'receipt_status': tx.get('receipt_status'),
+                    'epochID': tx.get('epochID'),
+                    'batchCID': tx.get('batchCID'),
+                    'dataMarket': tx.get('dataMarket'),
+                    'timestamp': tx.get('timestamp'),
+                    'block_number': tx.get('block_number'),
+                    'gas_used': tx.get('gas_used'),
+                }
+                by_project_id[project_id].append(tx_copy)
+        
+        # Convert defaultdict to regular dict for JSON serialization
+        result = {
+            'total_transactions': len(transactions),
+            'by_project_id': dict(by_project_id),
+        }
+        
+        return JSONResponse(
+            status_code=200,
+            content=result,
+        )
+    except Exception as e:
+        service_logger.opt(exception=True).error(f'Error in batch submissions diagnostic: {e}')
+        return JSONResponse(
+            status_code=500,
+            content={'error': str(e)},
         )
