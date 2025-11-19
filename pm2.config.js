@@ -1,8 +1,9 @@
 const NODE_ENV = 'development';
 const MIN_UPTIME = 60000; // 1 minute in milliseconds
-const settings = require('./settings/settings.json');
 
-const { signers } = settings;
+// Read signers count from environment variables
+const signerAddresses = process.env.VPA_SIGNER_ADDRESSES || '';
+const signersCount = signerAddresses ? signerAddresses.split(',').filter(addr => addr.trim()).length : 1;
 
 // Common configuration for all apps
 const commonConfig = {
@@ -36,7 +37,7 @@ const appConfigs = [
   createAppConfig("relayer-api", "gunicorn_launcher", {
   }),
   createWorkerConfig("tx_worker", "tx_worker",
-    signers.length),
+    signersCount),
 ];
 
 // Filter out null configurations (zero count services)

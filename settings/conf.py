@@ -74,8 +74,8 @@ def load_settings_from_env() -> SettingsConf:
         rabbitmq=RabbitMQ(
             user="guest",
             password="guest",
-            host="rabbitmq",
-            port=5672
+            host=os.getenv("RABBITMQ_HOST", "rabbitmq"),
+            port=int(os.getenv("RABBITMQ_PORT", "5672"))
         ),
         reporting=ReportingConfig(
             slack_url="",
