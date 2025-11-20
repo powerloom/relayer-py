@@ -223,14 +223,15 @@ class GenericAsyncWorker(multiprocessing.Process):
             address=Web3.to_checksum_address(settings.protocol_state_address), abi=self._abi,
         )
 
-        # Check signer account balance
-        balance = await self._w3.eth.get_balance(self._signer_account)
-        balance = self._w3.from_wei(balance, 'ether')
-        if balance < settings.min_signer_balance_eth:
-            logger.error(
-                f'Signer {self._signer_account} has insufficient balance: {balance} ETH',
-            )
-            exit(1)
+        # Check signer account balance (skip if min_signer_balance_eth is 0)
+        if settings.min_signer_balance_eth > 0:
+            balance = await self._w3.eth.get_balance(self._signer_account)
+            balance = self._w3.from_wei(balance, 'ether')
+            if balance < settings.min_signer_balance_eth:
+                logger.error(
+                    f'Signer {self._signer_account} has insufficient balance: {balance} ETH (minimum: {settings.min_signer_balance_eth} ETH)',
+                )
+                exit(1)
 
         # Initialize read-write lock
         self._rwlock = aiorwlock.RWLock(fast=True)

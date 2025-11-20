@@ -90,13 +90,13 @@ def load_settings_from_env() -> SettingsConf:
                 request_time_out=5,
                 connection_limits=ConnectionLimits()
             ),
-            chain_id=int(os.getenv("ANCHOR_CHAIN_ID")),
+            chain_id=int(os.getenv("ANCHOR_CHAIN_ID", "11167")),  # Default: 11167 for devnet
             polling_interval=2
         ),
         rlimit=RLimit(file_descriptors=40960),
         protocol_state_address=new_protocol_state_contract,
         signers=signers,
-        min_signer_balance_eth=1,
+        min_signer_balance_eth=float(os.getenv("MIN_SIGNER_BALANCE_ETH", "0")),  # Default 0 for devnet (disable check)
         auth_token="",
         tx_queue_wait_for_receipt=False
     )
