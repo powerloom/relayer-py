@@ -90,7 +90,7 @@ def load_settings_from_env() -> SettingsConf:
                 request_time_out=5,
                 connection_limits=ConnectionLimits()
             ),
-            chain_id=104,  # Powerloom devnet
+            chain_id=int(os.getenv("ANCHOR_CHAIN_ID"))
             polling_interval=2
         ),
         rlimit=RLimit(file_descriptors=40960),
