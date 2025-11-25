@@ -18,6 +18,7 @@ import re
 import time
 from typing import Callable, Optional, Any
 
+from web3 import Web3
 from utils.default_logger import logger
 from utils.redis_conn import get_writer_redis_conn
 from settings.conf import settings
@@ -290,10 +291,11 @@ class TransactionQueue:
                     self._current_nonce += 1
                     self._logger.info(f'Nonce incremented to {self._current_nonce} after successful receipt')
             elif receipt and receipt['status'] == 0:
+                error_msg = f'Transaction reverted on-chain (receipt.status=0) | tx_hash={tx_hash}'
                 self._logger.error(f'Transaction {tx_id} failed on-chain, nonce {nonce} not consumed')
-                # Update epoch state to failed
+                # Update epoch state to failed with error message
                 await self._update_epoch_state_in_redis(
-                    tx_item, tx_hash, receipt, failed=True
+                    tx_item, tx_hash, receipt, failed=True, error_message=error_msg
                 )
             elif not receipt:
                 # No receipt checking, assume success (for backwards compatibility)
@@ -305,6 +307,17 @@ class TransactionQueue:
         except Exception as e:
             error_str = str(e).lower()
             error_repr = repr(e).lower()
+            error_msg = str(e)
+            
+            # Update epoch state to failed with error message (if we have epoch metadata)
+            try:
+                await self._update_epoch_state_in_redis(
+                    tx_item, tx_hash if 'tx_hash' in locals() else '', None, 
+                    failed=True, error_message=error_msg
+                )
+            except Exception as redis_error:
+                # Don't fail transaction processing if Redis update fails
+                self._logger.warning(f'Failed to update epoch state in Redis: {redis_error}')
             
             # Handle nonce errors - extract correct nonce and retry
             if 'nonce too low' in error_str or 'nonce too high' in error_str or 'nonce too low' in error_repr or 'nonce too high' in error_repr:
@@ -555,7 +568,8 @@ class TransactionQueue:
         tx_item: dict,
         tx_hash: str,
         receipt: Optional[dict],
-        failed: bool = False
+        failed: bool = False,
+        error_message: Optional[str] = None
     ):
         """
         Update epoch state in Redis for DSV monitoring integration.
@@ -589,9 +603,9 @@ class TransactionQueue:
             if not epoch_id or not data_market_address:
                 return
             
-            # Get protocol state address from settings
-            protocol_state_address = settings.protocol_state_address.lower()
-            data_market = data_market_address.lower()
+            # Convert addresses to checksummed format (EIP-55) for consistent Redis keys
+            protocol_state_address = Web3.to_checksum_address(settings.protocol_state_address)
+            data_market = Web3.to_checksum_address(data_market_address)
             epoch_id_str = str(epoch_id)
             
             # Build Redis key: {protocol}:{market}:epoch:{epochId}:state
@@ -608,6 +622,9 @@ class TransactionQueue:
                 
                 if failed:
                     state_updates['onchain_status'] = 'failed'
+                    if error_message:
+                        # Store error message (truncate to 500 chars to avoid huge Redis values)
+                        state_updates['onchain_error'] = error_message[:500]
                 elif receipt:
                     if receipt.get('status') == 1:
                         # Transaction confirmed successfully
@@ -619,6 +636,9 @@ class TransactionQueue:
                         # Transaction failed on-chain
                         state_updates['onchain_status'] = 'failed'
                         state_updates['onchain_tx_hash'] = tx_hash
+                        # Try to extract error from receipt if available
+                        if receipt.get('status') == 0:
+                            state_updates['onchain_error'] = 'Transaction reverted on-chain (receipt.status=0)'
                 else:
                     # Transaction submitted but no receipt yet
                     state_updates['onchain_status'] = 'submitted'
