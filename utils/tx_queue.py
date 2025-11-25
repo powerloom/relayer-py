@@ -10,13 +10,17 @@ Key Features:
 - Automatic nonce error recovery with retry
 - Receipt verification to handle unreliable RPC providers
 - Queue-based async processing
+- Redis state commitment for epoch tracking (DSV integration)
 """
 
 import asyncio
 import re
+import time
 from typing import Callable, Optional, Any
 
 from utils.default_logger import logger
+from utils.redis_conn import get_writer_redis_conn
+from settings.conf import settings
 
 tx_logger = logger.bind(service='PowerLoom|Relayer|TX Queue')
 
@@ -90,6 +94,8 @@ class TransactionQueue:
         function_name=None,
         signer_address=None,
         function_args=None,
+        epoch_id: Optional[int] = None,
+        data_market_address: Optional[str] = None,
         *args,
         **kwargs
     ) -> str:
@@ -103,6 +109,8 @@ class TransactionQueue:
             function_name: Optional function name for gas estimation
             signer_address: Optional signer address for gas estimation
             function_args: Optional tuple/list of function arguments for gas estimation
+            epoch_id: Optional epoch ID for Redis state tracking (DSV integration)
+            data_market_address: Optional data market address for Redis state tracking (DSV integration)
             *args: Arguments to pass to tx_func (usually empty, nonce is passed separately)
             **kwargs: Keyword arguments to pass to tx_func
             
@@ -127,6 +135,8 @@ class TransactionQueue:
             'function_name': function_name,
             'signer_address': signer_address,
             'function_args': function_args,
+            'epoch_id': epoch_id,
+            'data_market_address': data_market_address,
         }
         
         # Put with timeout to avoid indefinite blocking if queue is full
@@ -254,6 +264,11 @@ class TransactionQueue:
             if not future.done():
                 future.set_result(result)
             
+            # Update epoch state in Redis immediately (submitted status)
+            await self._update_epoch_state_in_redis(
+                tx_item, tx_hash, None, failed=False
+            )
+            
             # Wait for receipt if w3 is provided (always done in background for nonce management)
             receipt = None
             if w3:
@@ -263,6 +278,11 @@ class TransactionQueue:
                 # Update result dict with receipt (for get_status() later)
                 result['status'] = 'confirmed'
                 result['receipt'] = receipt
+                
+                # Write epoch state to Redis for DSV monitoring (if epoch metadata available)
+                await self._update_epoch_state_in_redis(
+                    tx_item, tx_hash, receipt
+                )
             
             # CRITICAL: Only increment nonce AFTER successful receipt confirmation
             if receipt and receipt['status'] == 1:
@@ -271,6 +291,10 @@ class TransactionQueue:
                     self._logger.info(f'Nonce incremented to {self._current_nonce} after successful receipt')
             elif receipt and receipt['status'] == 0:
                 self._logger.error(f'Transaction {tx_id} failed on-chain, nonce {nonce} not consumed')
+                # Update epoch state to failed
+                await self._update_epoch_state_in_redis(
+                    tx_item, tx_hash, receipt, failed=True
+                )
             elif not receipt:
                 # No receipt checking, assume success (for backwards compatibility)
                 # But this should rarely happen if w3 is provided
@@ -525,4 +549,99 @@ class TransactionQueue:
                 return {'status': 'failed', 'error': str(e)}
         else:
             return {'status': 'pending'}
+    
+    async def _update_epoch_state_in_redis(
+        self,
+        tx_item: dict,
+        tx_hash: str,
+        receipt: Optional[dict],
+        failed: bool = False
+    ):
+        """
+        Update epoch state in Redis for DSV monitoring integration.
+        
+        Writes to the same Redis key format used by DSV nodes:
+        {protocol}:{market}:epoch:{epochId}:state
+        
+        Args:
+            tx_item: Transaction item with metadata
+            tx_hash: Transaction hash
+            receipt: Transaction receipt (if available)
+            failed: Whether transaction failed
+        """
+        try:
+            # Extract epoch metadata from tx_item
+            epoch_id = tx_item.get('epoch_id')
+            data_market_address = tx_item.get('data_market_address')
+            function_name = tx_item.get('function_name')
+            function_args = tx_item.get('function_args')
+            
+            # For submitSubmissionBatch, extract from function_args if not provided
+            if not epoch_id and function_name == 'submitSubmissionBatch' and function_args:
+                # function_args: (dataMarketAddress, batchCID, epochID, projectIDs, snapshotCIDs, finalizedCIDsRootHash)
+                if len(function_args) >= 3:
+                    if not data_market_address:
+                        data_market_address = function_args[0]
+                    if not epoch_id:
+                        epoch_id = function_args[2]
+            
+            # Only update Redis if we have epoch metadata
+            if not epoch_id or not data_market_address:
+                return
+            
+            # Get protocol state address from settings
+            protocol_state_address = settings.protocol_state_address.lower()
+            data_market = data_market_address.lower()
+            epoch_id_str = str(epoch_id)
+            
+            # Build Redis key: {protocol}:{market}:epoch:{epochId}:state
+            epoch_state_key = f"{protocol_state_address}:{data_market}:epoch:{epoch_id_str}:state"
+            
+            # Connect to Redis
+            redis_conn = await get_writer_redis_conn()
+            
+            try:
+                timestamp = int(time.time())
+                state_updates = {
+                    'last_updated': timestamp,
+                }
+                
+                if failed:
+                    state_updates['onchain_status'] = 'failed'
+                elif receipt:
+                    if receipt.get('status') == 1:
+                        # Transaction confirmed successfully
+                        state_updates['onchain_status'] = 'confirmed'
+                        state_updates['onchain_tx_hash'] = tx_hash
+                        state_updates['onchain_block_number'] = receipt.get('blockNumber', 0)
+                        state_updates['onchain_submitted_at'] = timestamp
+                    else:
+                        # Transaction failed on-chain
+                        state_updates['onchain_status'] = 'failed'
+                        state_updates['onchain_tx_hash'] = tx_hash
+                else:
+                    # Transaction submitted but no receipt yet
+                    state_updates['onchain_status'] = 'submitted'
+                    state_updates['onchain_tx_hash'] = tx_hash
+                    state_updates['onchain_submitted_at'] = timestamp
+                
+                # Update Redis hash (HSET)
+                await redis_conn.hset(epoch_state_key, mapping=state_updates)
+                
+                # Set TTL (7 days, same as DSV)
+                await redis_conn.expire(epoch_state_key, 7 * 24 * 3600)
+                
+                self._logger.info(
+                    f'Updated epoch state in Redis | epoch={epoch_id_str} | '
+                    f'status={state_updates.get("onchain_status")} | tx_hash={tx_hash}'
+                )
+            finally:
+                await redis_conn.close()
+                
+        except Exception as e:
+            # Don't fail transaction processing if Redis update fails
+            self._logger.warning(
+                f'Failed to update epoch state in Redis: {e} | '
+                f'epoch_id={epoch_id} | tx_hash={tx_hash}'
+            )
 

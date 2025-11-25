@@ -320,6 +320,8 @@ class TxWorker(GenericAsyncWorker):
                 list(txn_payload.snapshotCIDs),
                 txn_payload.finalizedCIDsRootHash,
             ),
+            epoch_id=txn_payload.epochID,
+            data_market_address=txn_payload.dataMarketAddress,
         )
         
         self._logger.info(
