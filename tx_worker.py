@@ -664,10 +664,16 @@ class TxWorker(GenericAsyncWorker):
                             
                             # Track this submission by tx_id (fire-and-forget mode)
                             # tx_hash will be available later via tx_queue.get_status(tx_id)
+                            submissions_key = epoch_batch_submissions(msg_obj.epochID)
                             await self.writer_redis_pool.sadd(
-                                epoch_batch_submissions(msg_obj.epochID),
+                                submissions_key,
                                 tx_id,  # Use tx_id instead of tx_hash for tracking
                             )
+                            # Set TTL on the SET key (24 hours - covers epoch lifecycle)
+                            # Only set TTL if key doesn't already have one (to avoid resetting expiry)
+                            ttl = await self.writer_redis_pool.ttl(submissions_key)
+                            if ttl == -1:  # Key exists but has no TTL
+                                await self.writer_redis_pool.expire(submissions_key, 86400)  # 24 hours
                             
                             # Get current submission count
                             set_size = await self.writer_redis_pool.scard(

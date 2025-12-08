@@ -221,10 +221,11 @@ async def submit_batch_size(
         )
     service_logger.debug('Received batch size request: {}', req_parsed)
     try:
-        # Store batch size in Redis
+        # Store batch size in Redis with TTL (24 hours - covers epoch lifecycle)
         await request.app.state.writer_redis_pool.set(
             epoch_batch_size(req_parsed.epochID),
             req_parsed.batchSize,
+            ex=86400,  # 24 hours TTL
         )
         return JSONResponse(
             status_code=200,
