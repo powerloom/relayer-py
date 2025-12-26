@@ -17,7 +17,12 @@ def load_settings_from_env() -> SettingsConf:
     # Load from environment variables
     vpa_signer_addresses = os.getenv("VPA_SIGNER_ADDRESSES", "")
     vpa_signer_private_keys = os.getenv("VPA_SIGNER_PRIVATE_KEYS", "")
-    powerloom_rpc_nodes = os.getenv("POWERLOOM_RPC_NODES", "https://devnet-orbit-rpc.aws2.powerloom.io/rpc?uuid=9dff8954-24f0-11f0-b88f-devnet")
+    powerloom_rpc_nodes = os.getenv("POWERLOOM_RPC_NODES", "")
+    if not powerloom_rpc_nodes:
+        raise ValueError(
+            "POWERLOOM_RPC_NODES environment variable is required. "
+            "Set it to your RPC endpoint URL(s)."
+        )
     new_protocol_state_contract = os.getenv("NEW_PROTOCOL_STATE_CONTRACT", "0xC9e7304f719D35919b0371d8B242ab59E0966d63")
 
     # Parse RPC nodes
@@ -47,15 +52,12 @@ def load_settings_from_env() -> SettingsConf:
             if addr and priv_key and addr != "0x0000000000000000000000000000000000000000":
                 signers.append(Signer(address=addr, private_key=priv_key))
 
-    # If no signers found, use default from environment
+    # If no signers found, raise error - signers must be configured
     if not signers:
-        print("Warning: No VPA signers configured in environment, using defaults")
-        signers = [
-            Signer(
-                address="0x164446B87AbbC0C1A389bD9bAF7F5aE813Cf6aB8",
-                private_key="0x02941ab09f5a9b573863e902ca182b300e5d494fc8011f51c65d87894d547042"
-            )
-        ]
+        raise ValueError(
+            "No signers configured. Either provide settings/settings.json with signers array, "
+            "or set VPA_SIGNER_ADDRESSES and VPA_SIGNER_PRIVATE_KEYS environment variables."
+        )
 
     return SettingsConf(
         relayer_service=RelayerService(
