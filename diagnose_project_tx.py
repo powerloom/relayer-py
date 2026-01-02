@@ -33,6 +33,7 @@ from typing import Optional, List, Dict, Any
 from web3 import AsyncWeb3, AsyncHTTPProvider, Web3
 from web3.middleware import async_geth_poa_middleware
 from web3.exceptions import TransactionNotFound, BlockNotFound
+from httpx import Timeout
 
 
 # Add parent directory to path to import settings
@@ -220,8 +221,12 @@ async def diagnose_project_transactions():
     print("Connecting to blockchain...")
     print("=" * 80)
     
-    # Connect to Web3
-    w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url))
+    # Connect to Web3 with timeout from settings if available
+    request_kwargs = {}
+    if SETTINGS_AVAILABLE and settings and hasattr(settings, 'anchor_chain') and hasattr(settings.anchor_chain, 'rpc'):
+        request_timeout = settings.anchor_chain.rpc.request_time_out
+        request_kwargs = {"timeout": Timeout(timeout=float(request_timeout))}
+    w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs=request_kwargs))
     
     # Add POA middleware if needed
     try:

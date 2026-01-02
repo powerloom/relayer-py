@@ -88,8 +88,8 @@ def load_settings_from_env() -> SettingsConf:
                 full_nodes=rpc_nodes,
                 archive_nodes=None,
                 force_archive_blocks=None,
-                retry=5,
-                request_time_out=5,
+                retry=int(os.getenv("RPC_RETRY", "5")),
+                request_time_out=int(os.getenv("RPC_REQUEST_TIMEOUT_S", "5")),
                 connection_limits=ConnectionLimits()
             ),
             chain_id=int(os.getenv("ANCHOR_CHAIN_ID")),

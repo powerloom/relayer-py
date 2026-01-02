@@ -204,10 +204,13 @@ class GenericAsyncWorker(multiprocessing.Process):
         with open('utils/static/abi.json', 'r') as f:
             self._abi = json.load(f)
 
-        # Initialize Web3 connection
+        # Initialize Web3 connection with timeout from settings
+        # Use request_time_out from settings.json (or env fallback)
+        request_timeout = settings.anchor_chain.rpc.request_time_out
         self._w3 = AsyncWeb3(
             AsyncHTTPProvider(
                 settings.anchor_chain.rpc.full_nodes[0].url,
+                request_kwargs={"timeout": Timeout(timeout=float(request_timeout))},
             ),
         )
 
