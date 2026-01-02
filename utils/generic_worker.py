@@ -26,6 +26,7 @@ from httpx import AsyncClient
 from httpx import AsyncHTTPTransport
 from httpx import Limits
 from httpx import Timeout
+from aiohttp import ClientTimeout
 from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
 from web3 import Web3
@@ -206,11 +207,12 @@ class GenericAsyncWorker(multiprocessing.Process):
 
         # Initialize Web3 connection with timeout from settings
         # Use request_time_out from settings.json (or env fallback)
+        # Note: AsyncHTTPProvider uses aiohttp internally, so we need ClientTimeout, not httpx or any other timeout object
         request_timeout = settings.anchor_chain.rpc.request_time_out
         self._w3 = AsyncWeb3(
             AsyncHTTPProvider(
                 settings.anchor_chain.rpc.full_nodes[0].url,
-                request_kwargs={"timeout": Timeout(timeout=float(request_timeout))},
+                request_kwargs={"timeout": ClientTimeout(total=float(request_timeout))},
             ),
         )
 
