@@ -207,12 +207,22 @@ class GenericAsyncWorker(multiprocessing.Process):
 
         # Initialize Web3 connection with timeout from settings
         # Use request_time_out from settings.json (or env fallback)
-        # Note: AsyncHTTPProvider uses aiohttp internally, so we need ClientTimeout, not httpx or any other timeout object
-        request_timeout = settings.anchor_chain.rpc.request_time_out
+        # Note: AsyncHTTPProvider uses aiohttp internally, so we need ClientTimeout with granular settings
+        # - connect: timeout for establishing connection including DNS/TCP (2s)
+        # - sock_connect: timeout for TCP socket connection specifically (2s)
+        # - sock_read: timeout for reading response data (main timeout from settings)
+        # - total: overall timeout (slightly higher than sock_read to account for connection overhead)
+        request_timeout = float(settings.anchor_chain.rpc.request_time_out)
+        timeout_config = ClientTimeout(
+            connect=2.0,  # 2 seconds for connection establishment (includes DNS lookup, TCP handshake)
+            sock_connect=2.0,  # 2 seconds for TCP socket connection specifically
+            sock_read=request_timeout,  # Main timeout for reading response data
+            total=request_timeout + 2.0,  # Total timeout = read timeout + connection overhead
+        )
         self._w3 = AsyncWeb3(
             AsyncHTTPProvider(
                 settings.anchor_chain.rpc.full_nodes[0].url,
-                request_kwargs={"timeout": ClientTimeout(total=float(request_timeout))},
+                request_kwargs={"timeout": timeout_config},
             ),
         )
 
