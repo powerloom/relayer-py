@@ -1,9 +1,32 @@
+const fs = require('fs');
+const path = require('path');
+
 const NODE_ENV = 'development';
 const MIN_UPTIME = 60000; // 1 minute in milliseconds
 
-// Read signers count from environment variables
-const signerAddresses = process.env.VPA_SIGNER_ADDRESSES || '';
-const signersCount = signerAddresses ? signerAddresses.split(',').filter(addr => addr.trim()).length : 1;
+// Get signers count - try settings.json first, fallback to VPA_SIGNER_ADDRESSES env var
+let signersCount = 1;
+
+// Try to read from settings.json (for standalone usage)
+const settingsPath = path.join(__dirname, 'settings', 'settings.json');
+if (fs.existsSync(settingsPath)) {
+  try {
+    const settings = require(settingsPath);
+    if (settings.signers && Array.isArray(settings.signers)) {
+      signersCount = settings.signers.length;
+    }
+  } catch (e) {
+    // Fall through to env var fallback
+  }
+}
+
+// Fallback to VPA_SIGNER_ADDRESSES env var (for DSV node usage)
+if (signersCount === 1) {
+  const signerAddresses = process.env.VPA_SIGNER_ADDRESSES || '';
+  if (signerAddresses) {
+    signersCount = signerAddresses.split(',').filter(addr => addr.trim()).length;
+  }
+}
 
 // Common configuration for all apps
 const commonConfig = {

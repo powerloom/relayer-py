@@ -43,6 +43,7 @@ class TransactionQueue:
         max_size: int = 100,
         service_name: str = "Relayer",
         wait_for_receipt: bool = False,
+        max_results_cache: int = 1000,
     ):
         """
         Initialize the transaction queue.
@@ -52,6 +53,7 @@ class TransactionQueue:
             service_name: Service name for logging (default: "Relayer")
             wait_for_receipt: If True, wait for receipt confirmation before returning.
                              If False (default), return immediately after submission (fire-and-forget)
+            max_results_cache: Maximum number of transaction results to keep in memory (default: 1000)
         """
         self._queue = asyncio.Queue(maxsize=max_size)
         self._processing = False
@@ -61,8 +63,10 @@ class TransactionQueue:
         self._current_nonce = None
         self._nonce_lock = asyncio.Lock()
         self._tx_processor_task: Optional[asyncio.Task] = None
+        self._cleanup_task: Optional[asyncio.Task] = None
         self._service_name = service_name
         self._wait_for_receipt = wait_for_receipt
+        self._max_results_cache = max_results_cache
         
         # Bind logger with service name
         self._logger = logger.bind(service=f'PowerLoom|{service_name}|TX Queue')
@@ -77,6 +81,7 @@ class TransactionQueue:
         self._current_nonce = initial_nonce
         self._processing = True
         self._tx_processor_task = asyncio.create_task(self._process_transactions())
+        self._cleanup_task = asyncio.create_task(self._cleanup_old_results())
         self._logger.info(f'Transaction queue started with nonce: {initial_nonce}')
         
     async def stop(self):
@@ -85,6 +90,12 @@ class TransactionQueue:
         await self._queue.put(None)  # Poison pill
         if self._tx_processor_task:
             await self._tx_processor_task
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
         self._logger.info('Transaction queue stopped')
         
     async def submit_transaction(
@@ -562,6 +573,49 @@ class TransactionQueue:
                 return {'status': 'failed', 'error': str(e)}
         else:
             return {'status': 'pending'}
+    
+    async def _cleanup_old_results(self):
+        """
+        Background task to clean up old transaction results and pending futures.
+        
+        This prevents memory leaks by removing completed transactions from memory
+        after they're no longer needed. Keeps only the most recent N transactions.
+        """
+        while self._processing:
+            try:
+                await asyncio.sleep(300)  # Run cleanup every 5 minutes
+                
+                # Clean up completed futures from _pending_txs
+                completed_txs = [
+                    tx_id for tx_id, future in self._pending_txs.items()
+                    if future.done()
+                ]
+                for tx_id in completed_txs:
+                    del self._pending_txs[tx_id]
+                
+                # Clean up old results from _tx_results if cache is too large
+                if len(self._tx_results) > self._max_results_cache:
+                    # Keep only the most recent transactions
+                    # Sort by tx_id (which includes counter, so newer = higher number)
+                    sorted_tx_ids = sorted(
+                        self._tx_results.keys(),
+                        key=lambda x: int(x.split('_')[1]) if '_' in x else 0,
+                        reverse=True
+                    )
+                    # Remove oldest entries
+                    to_remove = sorted_tx_ids[self._max_results_cache:]
+                    for tx_id in to_remove:
+                        del self._tx_results[tx_id]
+                    
+                    self._logger.debug(
+                        f'Cleaned up {len(to_remove)} old transaction results. '
+                        f'Cache size: {len(self._tx_results)}'
+                    )
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self._logger.opt(exception=True).warning(f'Error in cleanup task: {e}')
     
     async def _update_epoch_state_in_redis(
         self,
