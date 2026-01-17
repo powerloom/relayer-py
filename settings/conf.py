@@ -23,7 +23,12 @@ def load_settings_from_env() -> SettingsConf:
             "POWERLOOM_RPC_NODES environment variable is required. "
             "Set it to your RPC endpoint URL(s)."
         )
-    new_protocol_state_contract = os.getenv("NEW_PROTOCOL_STATE_CONTRACT", "0xC9e7304f719D35919b0371d8B242ab59E0966d63")
+    new_protocol_state_contract = os.getenv("NEW_PROTOCOL_STATE_CONTRACT")
+    if not new_protocol_state_contract:
+        raise ValueError(
+            "NEW_PROTOCOL_STATE_CONTRACT environment variable is required. "
+            "Set it to your ProtocolState contract address."
+        )
 
     # Parse RPC nodes
     rpc_nodes: List[RPCNodeConfig] = []
