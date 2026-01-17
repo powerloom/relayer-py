@@ -99,7 +99,7 @@ def load_settings_from_env() -> SettingsConf:
         protocol_state_address=new_protocol_state_contract,
         signers=signers,
         min_signer_balance_eth=float(os.getenv("MIN_SIGNER_BALANCE_ETH", "0")),  # Default 0 for devnet (disable check)
-        auth_token="",
+        auth_token=os.getenv("AUTH_TOKEN", ""),
         tx_queue_wait_for_receipt=False
     )
 
