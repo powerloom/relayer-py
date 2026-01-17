@@ -204,12 +204,12 @@ async def submit_update_rewards(
     wait=wait_random_exponential(multiplier=1, max=10),
     stop=stop_after_attempt(3),
 )
-async def submit_update_submission_counts(
+async def _publish_update_submission_counts(
     request: FastAPIRequest,
     update_submission_counts_payload: UpdateSubmissionCountsRequest,
 ):
     """
-    Submit a submission count update request to the RabbitMQ exchange (periodic updates).
+    Publish a submission count update request to the RabbitMQ exchange (periodic updates).
 
     Args:
         request (FastAPIRequest): The incoming FastAPI request object containing app state
@@ -458,7 +458,7 @@ async def submit_update_submission_counts(
 
     try:
         # Process the update submission counts request
-        await submit_update_submission_counts(request, req_parsed)
+        await _publish_update_submission_counts(request, req_parsed)
         return JSONResponse(
             status_code=200,
             content={'message': 'Submitted Update Submission Counts to relayer!'},
