@@ -564,3 +564,17 @@ async def submit_update_eligible_submission_counts(
             status_code=500,
             content={'message': 'Invalid request payload!'},
         )
+
+
+@app.get('/health')
+async def health_check():
+    """
+    Health check endpoint for Docker healthchecks and monitoring.
+    
+    Returns:
+        JSONResponse: A JSON response with status 'OK' and HTTP 200.
+    """
+    return JSONResponse(
+        status_code=200,
+        content={'status': 'OK'},
+    )
