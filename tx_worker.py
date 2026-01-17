@@ -17,6 +17,9 @@ from data_models import BatchSubmissionRequest
 from data_models import EndBatchRequest
 from data_models import ErrorMessage
 from data_models import UpdateRewardsRequest
+from data_models import UpdateSubmissionCountsRequest
+from data_models import UpdateEligibleNodesRequest
+from data_models import UpdateEligibleSubmissionCountsRequest
 from helpers.redis_keys import end_batch_submission_called
 from helpers.redis_keys import epoch_batch_size
 from helpers.redis_keys import epoch_batch_submissions
@@ -448,6 +451,237 @@ class TxWorker(GenericAsyncWorker):
         stop=stop_after_attempt(10),
         after=txn_retry_callback,
     )
+    async def submit_update_submission_counts(
+        self,
+        txn_payload: UpdateSubmissionCountsRequest,
+        priority_gas_multiplier: int = 0,
+    ):
+        """
+        Submit update submission counts transaction (periodic updates, no rewards).
+
+        Args:
+            txn_payload (UpdateSubmissionCountsRequest): The payload containing submission count update data.
+            priority_gas_multiplier (int, optional): Gas price multiplier for priority. Defaults to 0.
+
+        Returns:
+            str: The transaction ID if successful.
+        """
+        protocol_state_contract = await self.get_protocol_state_contract(
+            settings.protocol_state_address,
+        )
+        
+        try:
+            _ = await self._protocol_state_contract.functions.\
+                updateSubmissionCounts(
+                    txn_payload.dataMarketAddress,
+                    txn_payload.slotIDs,
+                    txn_payload.submissionsList,
+                    txn_payload.day,
+                ).estimate_gas({'from': self._signer_account})
+        except ContractLogicError as gas_error:
+            error_code = self._extract_error_code(gas_error)
+            self._logger.error(
+                'Gas estimation failed for update submission counts with ContractLogicError | '
+                'Error: {} | Error code: {}',
+                gas_error,
+                error_code or 'UNKNOWN',
+            )
+            raise Exception(
+                f'Contract logic error during gas estimation: {gas_error} '
+                f'(Error code: {error_code or "UNKNOWN"})'
+            ) from gas_error
+        
+        tx_func = create_transaction_func(
+            self._w3,
+            self._signer_account,
+            self._signer_pkey,
+            protocol_state_contract,
+            'updateSubmissionCounts',
+            self._last_gas_price,
+            priority_gas_multiplier,
+            txn_payload.dataMarketAddress,
+            txn_payload.slotIDs,
+            txn_payload.submissionsList,
+            txn_payload.day,
+        )
+        
+        tx_id = await self.tx_queue.submit_transaction(
+            tx_func,
+            w3=self._w3,
+            contract=self._protocol_state_contract,
+            function_name='updateSubmissionCounts',
+            signer_address=self._signer_account,
+            function_args=(
+                txn_payload.dataMarketAddress,
+                txn_payload.slotIDs,
+                txn_payload.submissionsList,
+                txn_payload.day,
+            ),
+        )
+        
+        self._logger.info(f'Queued update submission counts transaction {tx_id}')
+        return tx_id
+
+    @retry(
+        reraise=True,
+        retry=retry_if_exception_type(Exception),
+        wait=wait_random_exponential(multiplier=1, max=10),
+        stop=stop_after_attempt(10),
+        after=txn_retry_callback,
+    )
+    async def submit_update_eligible_nodes(
+        self,
+        txn_payload: UpdateEligibleNodesRequest,
+        priority_gas_multiplier: int = 0,
+    ):
+        """
+        Submit update eligible nodes transaction (Step 1 of end-of-day update).
+
+        Args:
+            txn_payload (UpdateEligibleNodesRequest): The payload containing eligible nodes update data.
+            priority_gas_multiplier (int, optional): Gas price multiplier for priority. Defaults to 0.
+
+        Returns:
+            str: The transaction ID if successful.
+        """
+        protocol_state_contract = await self.get_protocol_state_contract(
+            settings.protocol_state_address,
+        )
+        
+        try:
+            _ = await self._protocol_state_contract.functions.\
+                updateEligibleNodesForDay(
+                    txn_payload.dataMarketAddress,
+                    txn_payload.day,
+                    txn_payload.eligibleNodes,
+                ).estimate_gas({'from': self._signer_account})
+        except ContractLogicError as gas_error:
+            error_code = self._extract_error_code(gas_error)
+            self._logger.error(
+                'Gas estimation failed for update eligible nodes with ContractLogicError | '
+                'Error: {} | Error code: {}',
+                gas_error,
+                error_code or 'UNKNOWN',
+            )
+            raise Exception(
+                f'Contract logic error during gas estimation: {gas_error} '
+                f'(Error code: {error_code or "UNKNOWN"})'
+            ) from gas_error
+        
+        tx_func = create_transaction_func(
+            self._w3,
+            self._signer_account,
+            self._signer_pkey,
+            protocol_state_contract,
+            'updateEligibleNodesForDay',
+            self._last_gas_price,
+            priority_gas_multiplier,
+            txn_payload.dataMarketAddress,
+            txn_payload.day,
+            txn_payload.eligibleNodes,
+        )
+        
+        tx_id = await self.tx_queue.submit_transaction(
+            tx_func,
+            w3=self._w3,
+            contract=self._protocol_state_contract,
+            function_name='updateEligibleNodesForDay',
+            signer_address=self._signer_account,
+            function_args=(
+                txn_payload.dataMarketAddress,
+                txn_payload.day,
+                txn_payload.eligibleNodes,
+            ),
+        )
+        
+        self._logger.info(f'Queued update eligible nodes transaction {tx_id}')
+        return tx_id
+
+    @retry(
+        reraise=True,
+        retry=retry_if_exception_type(Exception),
+        wait=wait_random_exponential(multiplier=1, max=10),
+        stop=stop_after_attempt(10),
+        after=txn_retry_callback,
+    )
+    async def submit_update_eligible_submission_counts(
+        self,
+        txn_payload: UpdateEligibleSubmissionCountsRequest,
+        priority_gas_multiplier: int = 0,
+    ):
+        """
+        Submit update eligible submission counts transaction (Step 2 of end-of-day update).
+
+        Args:
+            txn_payload (UpdateEligibleSubmissionCountsRequest): The payload containing eligible submission counts update data.
+            priority_gas_multiplier (int, optional): Gas price multiplier for priority. Defaults to 0.
+
+        Returns:
+            str: The transaction ID if successful.
+        """
+        protocol_state_contract = await self.get_protocol_state_contract(
+            settings.protocol_state_address,
+        )
+        
+        try:
+            _ = await self._protocol_state_contract.functions.\
+                updateEligibleSubmissionCountsForDay(
+                    txn_payload.dataMarketAddress,
+                    txn_payload.slotIDs,
+                    txn_payload.submissionsList,
+                    txn_payload.day,
+                ).estimate_gas({'from': self._signer_account})
+        except ContractLogicError as gas_error:
+            error_code = self._extract_error_code(gas_error)
+            self._logger.error(
+                'Gas estimation failed for update eligible submission counts with ContractLogicError | '
+                'Error: {} | Error code: {}',
+                gas_error,
+                error_code or 'UNKNOWN',
+            )
+            raise Exception(
+                f'Contract logic error during gas estimation: {gas_error} '
+                f'(Error code: {error_code or "UNKNOWN"})'
+            ) from gas_error
+        
+        tx_func = create_transaction_func(
+            self._w3,
+            self._signer_account,
+            self._signer_pkey,
+            protocol_state_contract,
+            'updateEligibleSubmissionCountsForDay',
+            self._last_gas_price,
+            priority_gas_multiplier,
+            txn_payload.dataMarketAddress,
+            txn_payload.slotIDs,
+            txn_payload.submissionsList,
+            txn_payload.day,
+        )
+        
+        tx_id = await self.tx_queue.submit_transaction(
+            tx_func,
+            w3=self._w3,
+            contract=self._protocol_state_contract,
+            function_name='updateEligibleSubmissionCountsForDay',
+            signer_address=self._signer_account,
+            function_args=(
+                txn_payload.dataMarketAddress,
+                txn_payload.slotIDs,
+                txn_payload.submissionsList,
+                txn_payload.day,
+            ),
+        )
+        
+        self._logger.info(f'Queued update eligible submission counts transaction {tx_id}')
+        return tx_id
+
+    @retry(
+        reraise=True,
+        retry=retry_if_exception_type(Exception),
+        wait=wait_random_exponential(multiplier=1, max=10),
+        stop=stop_after_attempt(10),
+        after=txn_retry_callback,
+    )
     async def end_batch(
         self,
         txn_payload: EndBatchRequest,
@@ -608,14 +842,29 @@ class TxWorker(GenericAsyncWorker):
         await self.init()
 
         try:
-            # Parse message payload - try BatchSubmissionRequest first, then
-            # UpdateRewardsRequest
+            # Parse message payload - try different request types in order
+            msg_obj = None
             try:
                 msg_obj = BatchSubmissionRequest.parse_raw(message.body)
                 self._logger.debug('Parsed message as BatchSubmissionRequest')
             except ValidationError:
-                msg_obj = UpdateRewardsRequest.parse_raw(message.body)
-                self._logger.debug('Parsed message as UpdateRewardsRequest')
+                try:
+                    msg_obj = UpdateRewardsRequest.parse_raw(message.body)
+                    self._logger.debug('Parsed message as UpdateRewardsRequest')
+                except ValidationError:
+                    try:
+                        msg_obj = UpdateSubmissionCountsRequest.parse_raw(message.body)
+                        self._logger.debug('Parsed message as UpdateSubmissionCountsRequest')
+                    except ValidationError:
+                        try:
+                            msg_obj = UpdateEligibleNodesRequest.parse_raw(message.body)
+                            self._logger.debug('Parsed message as UpdateEligibleNodesRequest')
+                        except ValidationError:
+                            msg_obj = UpdateEligibleSubmissionCountsRequest.parse_raw(message.body)
+                            self._logger.debug('Parsed message as UpdateEligibleSubmissionCountsRequest')
+            
+            if msg_obj is None:
+                raise ValidationError('Could not parse message as any known request type')
 
         except ValidationError as e:
             # Log validation errors with message details
@@ -711,10 +960,30 @@ class TxWorker(GenericAsyncWorker):
                                 'No batch size configured for epochID={}, skipping batch tracking',
                                 msg_obj.epochID,
                             )
-                else:
-                    # Handle reward update request
+                elif isinstance(msg_obj, UpdateRewardsRequest):
+                    # Handle reward update request (deprecated, kept for backward compatibility)
                     tx_id = await self.submit_update_rewards(
                         txn_payload=msg_obj,
+                    )
+                elif isinstance(msg_obj, UpdateSubmissionCountsRequest):
+                    # Handle periodic submission count update (no rewards)
+                    tx_id = await self.submit_update_submission_counts(
+                        txn_payload=msg_obj,
+                    )
+                elif isinstance(msg_obj, UpdateEligibleNodesRequest):
+                    # Handle eligible nodes update (Step 1 of end-of-day)
+                    tx_id = await self.submit_update_eligible_nodes(
+                        txn_payload=msg_obj,
+                    )
+                elif isinstance(msg_obj, UpdateEligibleSubmissionCountsRequest):
+                    # Handle eligible submission counts update (Step 2 of end-of-day)
+                    tx_id = await self.submit_update_eligible_submission_counts(
+                        txn_payload=msg_obj,
+                    )
+                else:
+                    self._logger.error(
+                        'Unknown message type: {}',
+                        type(msg_obj).__name__,
                     )
             except Exception as e:
                 # Log error without full exception traceback to reduce verbosity
@@ -733,6 +1002,33 @@ class TxWorker(GenericAsyncWorker):
                 elif isinstance(msg_obj, UpdateRewardsRequest):
                     self._logger.error(
                         'Error submitting update rewards | dataMarket={} | day={} | '
+                        'slotIDs_count={} | error={}',
+                        msg_obj.dataMarketAddress,
+                        msg_obj.day,
+                        len(msg_obj.slotIDs),
+                        error_summary,
+                    )
+                elif isinstance(msg_obj, UpdateSubmissionCountsRequest):
+                    self._logger.error(
+                        'Error submitting update submission counts | dataMarket={} | day={} | '
+                        'slotIDs_count={} | error={}',
+                        msg_obj.dataMarketAddress,
+                        msg_obj.day,
+                        len(msg_obj.slotIDs),
+                        error_summary,
+                    )
+                elif isinstance(msg_obj, UpdateEligibleNodesRequest):
+                    self._logger.error(
+                        'Error submitting update eligible nodes | dataMarket={} | day={} | '
+                        'eligibleNodes={} | error={}',
+                        msg_obj.dataMarketAddress,
+                        msg_obj.day,
+                        msg_obj.eligibleNodes,
+                        error_summary,
+                    )
+                elif isinstance(msg_obj, UpdateEligibleSubmissionCountsRequest):
+                    self._logger.error(
+                        'Error submitting update eligible submission counts | dataMarket={} | day={} | '
                         'slotIDs_count={} | error={}',
                         msg_obj.dataMarketAddress,
                         msg_obj.day,

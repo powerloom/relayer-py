@@ -169,6 +169,32 @@ class UpdateRewardsRequest(BaseModel):
     authToken: str
 
 
+class UpdateSubmissionCountsRequest(BaseModel):
+    """Request model for periodic submission count updates (no rewards distribution)."""
+    dataMarketAddress: str
+    slotIDs: List[int]
+    submissionsList: List[int]
+    day: int
+    authToken: str
+
+
+class UpdateEligibleNodesRequest(BaseModel):
+    """Request model for updating eligible nodes count for a day (Step 1 of end-of-day update)."""
+    dataMarketAddress: str
+    day: int
+    eligibleNodes: int
+    authToken: str
+
+
+class UpdateEligibleSubmissionCountsRequest(BaseModel):
+    """Request model for updating eligible submission counts and distributing rewards (Step 2 of end-of-day update)."""
+    dataMarketAddress: str
+    slotIDs: List[int]
+    submissionsList: List[int]
+    day: int
+    authToken: str
+
+
 class EndBatchRequest(BaseModel):
     """Request model for ending a batch."""
     dataMarketAddress: str

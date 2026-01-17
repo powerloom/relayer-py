@@ -20,6 +20,9 @@ from tenacity import wait_random_exponential
 from data_models import BatchSizeRequest
 from data_models import BatchSubmissionRequest
 from data_models import UpdateRewardsRequest
+from data_models import UpdateSubmissionCountsRequest
+from data_models import UpdateEligibleNodesRequest
+from data_models import UpdateEligibleSubmissionCountsRequest
 from helpers.redis_keys import epoch_batch_size
 from init_rabbitmq import get_core_exchange_name
 from init_rabbitmq import get_tx_send_q_routing_key
@@ -195,6 +198,96 @@ async def submit_update_rewards(
         )
 
 
+@retry(
+    reraise=True,
+    retry=retry_if_exception_type(Exception),
+    wait=wait_random_exponential(multiplier=1, max=10),
+    stop=stop_after_attempt(3),
+)
+async def submit_update_submission_counts(
+    request: FastAPIRequest,
+    update_submission_counts_payload: UpdateSubmissionCountsRequest,
+):
+    """
+    Submit a submission count update request to the RabbitMQ exchange (periodic updates).
+
+    Args:
+        request (FastAPIRequest): The incoming FastAPI request object containing app state
+        update_submission_counts_payload (UpdateSubmissionCountsRequest): The payload containing
+            submission count update data including slot IDs, submissions list, and day
+
+    Raises:
+        Exception: If the submission fails after all retry attempts
+    """
+    async with request.app.state.rmq_channel_pool.acquire() as channel:
+        exchange = await channel.get_exchange(name=get_core_exchange_name())
+        queue_name, routing_key = get_tx_send_q_routing_key()
+        await exchange.publish(
+            routing_key=routing_key,
+            message=Message(update_submission_counts_payload.json().encode('utf-8')),
+        )
+
+
+@retry(
+    reraise=True,
+    retry=retry_if_exception_type(Exception),
+    wait=wait_random_exponential(multiplier=1, max=10),
+    stop=stop_after_attempt(3),
+)
+async def submit_update_eligible_nodes(
+    request: FastAPIRequest,
+    update_eligible_nodes_payload: UpdateEligibleNodesRequest,
+):
+    """
+    Submit an eligible nodes update request to the RabbitMQ exchange (Step 1 of end-of-day update).
+
+    Args:
+        request (FastAPIRequest): The incoming FastAPI request object containing app state
+        update_eligible_nodes_payload (UpdateEligibleNodesRequest): The payload containing
+            eligible nodes update data including day and eligible nodes count
+
+    Raises:
+        Exception: If the submission fails after all retry attempts
+    """
+    async with request.app.state.rmq_channel_pool.acquire() as channel:
+        exchange = await channel.get_exchange(name=get_core_exchange_name())
+        queue_name, routing_key = get_tx_send_q_routing_key()
+        await exchange.publish(
+            routing_key=routing_key,
+            message=Message(update_eligible_nodes_payload.json().encode('utf-8')),
+        )
+
+
+@retry(
+    reraise=True,
+    retry=retry_if_exception_type(Exception),
+    wait=wait_random_exponential(multiplier=1, max=10),
+    stop=stop_after_attempt(3),
+)
+async def submit_update_eligible_submission_counts(
+    request: FastAPIRequest,
+    update_eligible_submission_counts_payload: UpdateEligibleSubmissionCountsRequest,
+):
+    """
+    Submit an eligible submission counts update request to the RabbitMQ exchange (Step 2 of end-of-day update).
+
+    Args:
+        request (FastAPIRequest): The incoming FastAPI request object containing app state
+        update_eligible_submission_counts_payload (UpdateEligibleSubmissionCountsRequest): The payload containing
+            eligible submission counts update data including slot IDs, submissions list, and day
+
+    Raises:
+        Exception: If the submission fails after all retry attempts
+    """
+    async with request.app.state.rmq_channel_pool.acquire() as channel:
+        exchange = await channel.get_exchange(name=get_core_exchange_name())
+        queue_name, routing_key = get_tx_send_q_routing_key()
+        await exchange.publish(
+            routing_key=routing_key,
+            message=Message(update_eligible_submission_counts_payload.json().encode('utf-8')),
+        )
+
+
 @app.post('/submitBatchSize')
 async def submit_batch_size(
     request: FastAPIRequest,
@@ -322,6 +415,147 @@ async def submit_update_rewards_submission(
         return JSONResponse(
             status_code=200,
             content={'message': 'Submitted Update Rewards to relayer!'},
+        )
+    except Exception as e:
+        # Log any errors that occur during processing
+        service_logger.opt(exception=True).error(f'Exception: {e}')
+        return JSONResponse(
+            status_code=500,
+            content={'message': 'Invalid request payload!'},
+        )
+
+
+@app.post('/submitUpdateSubmissionCounts')
+async def submit_update_submission_counts(
+    request: FastAPIRequest,
+    req_parsed: UpdateSubmissionCountsRequest,
+    response: Response,
+):
+    """
+    Submit a periodic submission count update request (no rewards distribution).
+
+    This endpoint receives a submission count update request and forwards it to the
+    submit_update_submission_counts function for processing.
+
+    Args:
+        request (FastAPIRequest): The incoming request object.
+        req_parsed (UpdateSubmissionCountsRequest): The parsed request containing
+            data market address, slot IDs, submissions list, and day.
+        response (Response): The response object.
+
+    Returns:
+        JSONResponse: A JSON response indicating success (200) or failure (401/500).
+    """
+    # Verify authentication token
+    if req_parsed.authToken != settings.auth_token:
+        return JSONResponse(
+            status_code=401,
+            content={'message': 'Unauthorized'},
+        )
+
+    # Log the incoming request
+    service_logger.debug('Received update submission counts request: {}', req_parsed)
+
+    try:
+        # Process the update submission counts request
+        await submit_update_submission_counts(request, req_parsed)
+        return JSONResponse(
+            status_code=200,
+            content={'message': 'Submitted Update Submission Counts to relayer!'},
+        )
+    except Exception as e:
+        # Log any errors that occur during processing
+        service_logger.opt(exception=True).error(f'Exception: {e}')
+        return JSONResponse(
+            status_code=500,
+            content={'message': 'Invalid request payload!'},
+        )
+
+
+@app.post('/submitUpdateEligibleNodes')
+async def submit_update_eligible_nodes(
+    request: FastAPIRequest,
+    req_parsed: UpdateEligibleNodesRequest,
+    response: Response,
+):
+    """
+    Submit an update eligible nodes request (Step 1 of end-of-day update).
+
+    This endpoint receives an eligible nodes update request and forwards it to the
+    submit_update_eligible_nodes function for processing.
+
+    Args:
+        request (FastAPIRequest): The incoming request object.
+        req_parsed (UpdateEligibleNodesRequest): The parsed request containing
+            data market address, day, and eligible nodes count.
+        response (Response): The response object.
+
+    Returns:
+        JSONResponse: A JSON response indicating success (200) or failure (401/500).
+    """
+    # Verify authentication token
+    if req_parsed.authToken != settings.auth_token:
+        return JSONResponse(
+            status_code=401,
+            content={'message': 'Unauthorized'},
+        )
+
+    # Log the incoming request
+    service_logger.debug('Received update eligible nodes request: {}', req_parsed)
+
+    try:
+        # Process the update eligible nodes request
+        await submit_update_eligible_nodes(request, req_parsed)
+        return JSONResponse(
+            status_code=200,
+            content={'message': 'Submitted Update Eligible Nodes to relayer!'},
+        )
+    except Exception as e:
+        # Log any errors that occur during processing
+        service_logger.opt(exception=True).error(f'Exception: {e}')
+        return JSONResponse(
+            status_code=500,
+            content={'message': 'Invalid request payload!'},
+        )
+
+
+@app.post('/submitUpdateEligibleSubmissionCounts')
+async def submit_update_eligible_submission_counts(
+    request: FastAPIRequest,
+    req_parsed: UpdateEligibleSubmissionCountsRequest,
+    response: Response,
+):
+    """
+    Submit an update eligible submission counts request (Step 2 of end-of-day update).
+
+    This endpoint receives an eligible submission counts update request and forwards it to the
+    submit_update_eligible_submission_counts function for processing.
+
+    Args:
+        request (FastAPIRequest): The incoming request object.
+        req_parsed (UpdateEligibleSubmissionCountsRequest): The parsed request containing
+            data market address, slot IDs, submissions list, and day.
+        response (Response): The response object.
+
+    Returns:
+        JSONResponse: A JSON response indicating success (200) or failure (401/500).
+    """
+    # Verify authentication token
+    if req_parsed.authToken != settings.auth_token:
+        return JSONResponse(
+            status_code=401,
+            content={'message': 'Unauthorized'},
+        )
+
+    # Log the incoming request
+    service_logger.debug('Received update eligible submission counts request: {}', req_parsed)
+
+    try:
+        # Process the update eligible submission counts request
+        await submit_update_eligible_submission_counts(request, req_parsed)
+        return JSONResponse(
+            status_code=200,
+            content={'message': 'Submitted Update Eligible Submission Counts to relayer!'},
         )
     except Exception as e:
         # Log any errors that occur during processing
