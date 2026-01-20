@@ -23,10 +23,10 @@ def load_settings_from_env() -> SettingsConf:
             "POWERLOOM_RPC_NODES environment variable is required. "
             "Set it to your RPC endpoint URL(s)."
         )
-    new_protocol_state_contract = os.getenv("NEW_PROTOCOL_STATE_CONTRACT")
-    if not new_protocol_state_contract:
+    protocol_state_contract = os.getenv("PROTOCOL_STATE_CONTRACT")
+    if not protocol_state_contract:
         raise ValueError(
-            "NEW_PROTOCOL_STATE_CONTRACT environment variable is required. "
+            "PROTOCOL_STATE_CONTRACT environment variable is required. "
             "Set it to your ProtocolState contract address."
         )
 
@@ -101,7 +101,7 @@ def load_settings_from_env() -> SettingsConf:
             polling_interval=2
         ),
         rlimit=RLimit(file_descriptors=40960),
-        protocol_state_address=new_protocol_state_contract,
+        protocol_state_address=protocol_state_contract,
         signers=signers,
         min_signer_balance_eth=float(os.getenv("MIN_SIGNER_BALANCE_ETH", "0")),  # Default 0 for devnet (disable check)
         auth_token=os.getenv("AUTH_TOKEN", ""),
