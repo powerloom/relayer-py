@@ -80,6 +80,8 @@ class GenericAsyncWorker(multiprocessing.Process):
     _signer_pkey: str
     _abi: Dict[str, Any]
     _protocol_state_contract: Any
+    _abi_legacy: Dict[str, Any]
+    _protocol_state_contract_legacy: Any
 
     def __init__(self, name, **kwargs):
         """
@@ -96,12 +98,14 @@ class GenericAsyncWorker(multiprocessing.Process):
         self._running_callback_tasks: Dict[str, asyncio.Task] = dict()
         super(GenericAsyncWorker, self).__init__(name=name, **kwargs)
         self._protocol_state_contract = None
+        self._protocol_state_contract_legacy = None
         self._qos = 1
         self._rate_limiting_lua_scripts = None
         self.protocol_state_contract_address = settings.protocol_state_address
         self._worker_idx = int(os.environ['NODE_APP_INSTANCE'])
         self._initialized = False
         self.protocol_state_contract_instance_mapping = {}
+        self.protocol_state_contract_instance_mapping_legacy = {}
         self._ev_loop = None  # Store event loop reference for cleanup
 
     def _signal_handler(self, signum, frame):
@@ -144,6 +148,31 @@ class GenericAsyncWorker(multiprocessing.Process):
             return contract
         else:
             return self.protocol_state_contract_instance_mapping[checksum_address]
+
+    async def get_protocol_state_contract_legacy(self, contract_address: str):
+        """
+        Get or create a Legacy Protocol State Contract instance (for old unified updateRewards function).
+
+        Args:
+            contract_address (str): The address of the contract.
+
+        Returns:
+            Contract: The legacy contract instance, or None if the address is invalid.
+        """
+        # Validate contract address
+        if not self._w3.is_address(contract_address):
+            return None
+
+        # Get or create legacy contract object
+        checksum_address = self._w3.to_checksum_address(contract_address)
+        if checksum_address not in self.protocol_state_contract_instance_mapping_legacy:
+            contract = self._w3.eth.contract(
+                address=contract_address, abi=self._abi_legacy,
+            )
+            self.protocol_state_contract_instance_mapping_legacy[checksum_address] = contract
+            return contract
+        else:
+            return self.protocol_state_contract_instance_mapping_legacy[checksum_address]
 
     async def _rabbitmq_consumer(self, loop):
         """
@@ -204,6 +233,10 @@ class GenericAsyncWorker(multiprocessing.Process):
         """
         with open('utils/static/abi.json', 'r') as f:
             self._abi = json.load(f)
+        
+        # Load legacy ABI for backward compatibility with old unified updateRewards function
+        with open('utils/static/abi_legacy.json', 'r') as f:
+            self._abi_legacy = json.load(f)
 
         # Initialize Web3 connection with timeout from settings
         # Use request_time_out from settings.json (or env fallback)
@@ -233,9 +266,14 @@ class GenericAsyncWorker(multiprocessing.Process):
         self._signer_nonce = await self._w3.eth.get_transaction_count(self._signer_account)
         self._signer_pkey = settings.signers[self._worker_idx].private_key
 
-        # Initialize protocol state contract
+        # Initialize protocol state contract (new refactored contract)
         self._protocol_state_contract = self._w3.eth.contract(
             address=Web3.to_checksum_address(settings.protocol_state_address), abi=self._abi,
+        )
+        
+        # Initialize legacy protocol state contract (old unified contract with updateRewards)
+        self._protocol_state_contract_legacy = self._w3.eth.contract(
+            address=Web3.to_checksum_address(settings.protocol_state_address), abi=self._abi_legacy,
         )
 
         # Check signer account balance (skip if min_signer_balance_eth is 0)

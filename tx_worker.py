@@ -358,7 +358,8 @@ class TxWorker(GenericAsyncWorker):
         priority_gas_multiplier: int = 0,
     ):
         """
-        Submit update rewards transaction using transaction queue.
+        Submit update rewards transaction using legacy unified contract (backward compatibility).
+        Uses old unified updateRewards function with 5 parameters.
 
         Args:
             txn_payload (UpdateRewardsRequest): The payload containing update
@@ -372,13 +373,13 @@ class TxWorker(GenericAsyncWorker):
         Raises:
             Exception: If the transaction fails or encounters a nonce error.
         """
-        protocol_state_contract = await self.get_protocol_state_contract(
+        protocol_state_contract = await self.get_protocol_state_contract_legacy(
             settings.protocol_state_address,
         )
         
         # Check for contract errors BEFORE submitting to queue
         try:
-            _ = await self._protocol_state_contract.functions.\
+            _ = await self._protocol_state_contract_legacy.functions.\
                 updateRewards(
                     txn_payload.dataMarketAddress,
                     txn_payload.slotIDs,
@@ -425,7 +426,7 @@ class TxWorker(GenericAsyncWorker):
         tx_id = await self.tx_queue.submit_transaction(
             tx_func,
             w3=self._w3,
-            contract=self._protocol_state_contract,
+            contract=self._protocol_state_contract_legacy,
             function_name='updateRewards',
             signer_address=self._signer_account,
             function_args=(
