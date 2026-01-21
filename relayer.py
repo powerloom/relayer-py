@@ -234,12 +234,12 @@ async def _publish_update_submission_counts(
     wait=wait_random_exponential(multiplier=1, max=10),
     stop=stop_after_attempt(3),
 )
-async def submit_update_eligible_nodes(
+async def _publish_update_eligible_nodes(
     request: FastAPIRequest,
     update_eligible_nodes_payload: UpdateEligibleNodesRequest,
 ):
     """
-    Submit an eligible nodes update request to the RabbitMQ exchange (Step 1 of end-of-day update).
+    Publish an eligible nodes update request to the RabbitMQ exchange (Step 1 of end-of-day update).
 
     Args:
         request (FastAPIRequest): The incoming FastAPI request object containing app state
@@ -264,12 +264,12 @@ async def submit_update_eligible_nodes(
     wait=wait_random_exponential(multiplier=1, max=10),
     stop=stop_after_attempt(3),
 )
-async def submit_update_eligible_submission_counts(
+async def _publish_update_eligible_submission_counts(
     request: FastAPIRequest,
     update_eligible_submission_counts_payload: UpdateEligibleSubmissionCountsRequest,
 ):
     """
-    Submit an eligible submission counts update request to the RabbitMQ exchange (Step 2 of end-of-day update).
+    Publish an eligible submission counts update request to the RabbitMQ exchange (Step 2 of end-of-day update).
 
     Args:
         request (FastAPIRequest): The incoming FastAPI request object containing app state
@@ -505,7 +505,7 @@ async def submit_update_eligible_nodes(
 
     try:
         # Process the update eligible nodes request
-        await submit_update_eligible_nodes(request, req_parsed)
+        await _publish_update_eligible_nodes(request, req_parsed)
         return JSONResponse(
             status_code=200,
             content={'message': 'Submitted Update Eligible Nodes to relayer!'},
@@ -552,7 +552,7 @@ async def submit_update_eligible_submission_counts(
 
     try:
         # Process the update eligible submission counts request
-        await submit_update_eligible_submission_counts(request, req_parsed)
+        await _publish_update_eligible_submission_counts(request, req_parsed)
         return JSONResponse(
             status_code=200,
             content={'message': 'Submitted Update Eligible Submission Counts to relayer!'},
