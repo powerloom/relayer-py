@@ -600,7 +600,9 @@ class TxWorker(GenericAsyncWorker):
     @retry(
         reraise=True,
         retry=retry_if_exception_type(Exception),
-        wait=wait_random_exponential(multiplier=1, max=10),
+        # Use longer backoff for Step 2 calls: exponential backoff starting at 2s, up to 30s max
+        # This helps when multiple calls fire rapidly after Step 1, allowing state to propagate
+        wait=wait_random_exponential(multiplier=2, max=30),  # Backoff: ~2s, ~4s, ~8s, ~16s, ~30s max
         stop=stop_after_attempt(10),
         after=txn_retry_callback,
     )
@@ -611,6 +613,10 @@ class TxWorker(GenericAsyncWorker):
     ):
         """
         Submit update eligible submission counts transaction (Step 2 of end-of-day update).
+        
+        Note: This function uses extended exponential backoff (multiplier=2, max=30s) to handle
+        rapid concurrent calls that may fail gas estimation due to state not being ready yet.
+        The backoff helps when Step 1 (updateEligibleNodes) transaction hasn't been mined yet.
 
         Args:
             txn_payload (UpdateEligibleSubmissionCountsRequest): The payload containing eligible submission counts update data.
@@ -633,12 +639,31 @@ class TxWorker(GenericAsyncWorker):
                 ).estimate_gas({'from': self._signer_account})
         except ContractLogicError as gas_error:
             error_code = self._extract_error_code(gas_error)
-            self._logger.error(
-                'Gas estimation failed for update eligible submission counts with ContractLogicError | '
-                'Error: {} | Error code: {}',
-                gas_error,
-                error_code or 'UNKNOWN',
+            error_msg = str(gas_error).lower()
+            
+            # Check if this might be a transient error (state not ready yet)
+            # Common causes: Step 1 transaction not mined yet, nonce conflicts, etc.
+            is_transient = (
+                'execution reverted' in error_msg or
+                'revert' in error_msg or
+                error_code in ('E47', 'E48')  # Already called errors might be transient if state hasn't propagated
             )
+            
+            if is_transient:
+                self._logger.warning(
+                    'Gas estimation failed (possibly transient) for update eligible submission counts | '
+                    'Error: {} | Error code: {} | Will retry with backoff',
+                    gas_error,
+                    error_code or 'UNKNOWN',
+                )
+            else:
+                self._logger.error(
+                    'Gas estimation failed for update eligible submission counts with ContractLogicError | '
+                    'Error: {} | Error code: {}',
+                    gas_error,
+                    error_code or 'UNKNOWN',
+                )
+            
             raise Exception(
                 f'Contract logic error during gas estimation: {gas_error} '
                 f'(Error code: {error_code or "UNKNOWN"})'
