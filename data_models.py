@@ -144,6 +144,7 @@ class BatchSizeRequest(BaseModel):
 
 class BatchSubmissionRequest(BaseModel):
     """Request model for batch submission operations."""
+    messageType: str = "BatchSubmission"
     dataMarketAddress: str
     batchCID: str
     epochID: int
@@ -161,6 +162,7 @@ class ErrorMessage(BaseModel):
 
 class UpdateRewardsRequest(BaseModel):
     """Request model for update rewards operations."""
+    messageType: str = "UpdateRewards"
     dataMarketAddress: str
     slotIDs: List[int]
     submissionsList: List[int]
@@ -171,6 +173,7 @@ class UpdateRewardsRequest(BaseModel):
 
 class UpdateSubmissionCountsRequest(BaseModel):
     """Request model for periodic submission count updates (no rewards distribution)."""
+    messageType: str = "UpdateSubmissionCounts"
     dataMarketAddress: str
     slotIDs: List[int]
     submissionsList: List[int]
@@ -180,6 +183,7 @@ class UpdateSubmissionCountsRequest(BaseModel):
 
 class UpdateEligibleNodesRequest(BaseModel):
     """Request model for updating eligible nodes count for a day (Step 1 of end-of-day update)."""
+    messageType: str = "UpdateEligibleNodes"
     dataMarketAddress: str
     day: int
     eligibleNodes: int
@@ -188,6 +192,7 @@ class UpdateEligibleNodesRequest(BaseModel):
 
 class UpdateEligibleSubmissionCountsRequest(BaseModel):
     """Request model for updating eligible submission counts and distributing rewards (Step 2 of end-of-day update)."""
+    messageType: str = "UpdateEligibleSubmissionCounts"
     dataMarketAddress: str
     slotIDs: List[int]
     submissionsList: List[int]

@@ -843,29 +843,38 @@ class TxWorker(GenericAsyncWorker):
         await self.init()
 
         try:
-            # Parse message payload - try different request types in order
+            # Parse JSON first, then identify type by messageType field
+            import json
+            msg_dict = json.loads(message.body)
+            
+            # Use messageType field to identify message type (if present)
+            # Fallback to field-based detection for backward compatibility
+            message_type = msg_dict.get('messageType')
+            
             msg_obj = None
-            try:
+            
+            if message_type == "BatchSubmission" or ('batchCID' in msg_dict and 'epochID' in msg_dict and 'projectIDs' in msg_dict):
                 msg_obj = BatchSubmissionRequest.parse_raw(message.body)
                 self._logger.debug('Parsed message as BatchSubmissionRequest')
-            except ValidationError:
-                try:
-                    msg_obj = UpdateRewardsRequest.parse_raw(message.body)
-                    self._logger.debug('Parsed message as UpdateRewardsRequest')
-                except ValidationError:
-                    try:
-                        msg_obj = UpdateSubmissionCountsRequest.parse_raw(message.body)
-                        self._logger.debug('Parsed message as UpdateSubmissionCountsRequest')
-                    except ValidationError:
-                        try:
-                            msg_obj = UpdateEligibleNodesRequest.parse_raw(message.body)
-                            self._logger.debug('Parsed message as UpdateEligibleNodesRequest')
-                        except ValidationError:
-                            msg_obj = UpdateEligibleSubmissionCountsRequest.parse_raw(message.body)
-                            self._logger.debug('Parsed message as UpdateEligibleSubmissionCountsRequest')
             
-            if msg_obj is None:
-                raise ValidationError('Could not parse message as any known request type')
+            elif message_type == "UpdateRewards" or ('eligibleNodes' in msg_dict and 'slotIDs' in msg_dict and 'day' in msg_dict):
+                msg_obj = UpdateRewardsRequest.parse_raw(message.body)
+                self._logger.debug('Parsed message as UpdateRewardsRequest')
+            
+            elif message_type == "UpdateEligibleNodes" or ('eligibleNodes' in msg_dict and 'slotIDs' not in msg_dict):
+                msg_obj = UpdateEligibleNodesRequest.parse_raw(message.body)
+                self._logger.debug('Parsed message as UpdateEligibleNodesRequest')
+            
+            elif message_type == "UpdateEligibleSubmissionCounts":
+                msg_obj = UpdateEligibleSubmissionCountsRequest.parse_raw(message.body)
+                self._logger.debug('Parsed message as UpdateEligibleSubmissionCountsRequest')
+            
+            elif message_type == "UpdateSubmissionCounts" or ('slotIDs' in msg_dict and 'submissionsList' in msg_dict):
+                msg_obj = UpdateSubmissionCountsRequest.parse_raw(message.body)
+                self._logger.debug('Parsed message as UpdateSubmissionCountsRequest')
+            
+            else:
+                raise ValidationError(f'Could not identify message type. messageType: {message_type}, Fields: {list(msg_dict.keys())}')
 
         except ValidationError as e:
             # Log validation errors with message details
