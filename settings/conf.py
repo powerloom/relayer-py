@@ -23,7 +23,7 @@ def load_settings_from_env() -> SettingsConf:
             "POWERLOOM_RPC_NODES environment variable is required. "
             "Set it to your RPC endpoint URL(s)."
         )
-    protocol_state_contract = os.getenv("PROTOCOL_STATE_CONTRACT")docker ps 
+    protocol_state_contract = os.getenv("PROTOCOL_STATE_CONTRACT")
     if not protocol_state_contract:
         raise ValueError(
             "PROTOCOL_STATE_CONTRACT environment variable is required. "
