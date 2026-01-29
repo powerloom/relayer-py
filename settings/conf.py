@@ -23,7 +23,7 @@ def load_settings_from_env() -> SettingsConf:
             "POWERLOOM_RPC_NODES environment variable is required. "
             "Set it to your RPC endpoint URL(s)."
         )
-    protocol_state_contract = os.getenv("PROTOCOL_STATE_CONTRACT")
+    protocol_state_contract = os.getenv("PROTOCOL_STATE_CONTRACT")docker ps 
     if not protocol_state_contract:
         raise ValueError(
             "PROTOCOL_STATE_CONTRACT environment variable is required. "
@@ -66,8 +66,8 @@ def load_settings_from_env() -> SettingsConf:
 
     return SettingsConf(
         relayer_service=RelayerService(
-            host="0.0.0.0",
-            port="8080",
+            host=os.getenv("RELAYER_HOST", "0.0.0.0"),
+            port=os.getenv("RELAYER_PORT", "8080"),
             keepalive_secs=600,
             keys_ttl=86400
         ),
