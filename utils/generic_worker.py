@@ -46,18 +46,23 @@ from utils.tx_queue import TransactionQueue
 DAY_BUFFER = 36
 
 _web3_session_patched = False
+_web3_sessions_by_endpoint = {}
 
 
 def _patch_web3_session_factory(connector: TCPConnector) -> None:
-    """Patch web3's async session cache to use a shared connector (connection pooling)."""
+    """Patch web3's async session cache to use shared connector (connection pooling). Reuse session per endpoint to avoid 'Unclosed client session' (web3 passes session=None every call)."""
     global _web3_session_patched
     if _web3_session_patched:
         return
     _original = async_cache_and_return_session
 
     async def _cached_session_with_connector(endpoint_uri, session=None):
-        if session is None:
-            session = ClientSession(connector=connector, raise_for_status=True)
+        global _web3_sessions_by_endpoint
+        if endpoint_uri not in _web3_sessions_by_endpoint:
+            _web3_sessions_by_endpoint[endpoint_uri] = ClientSession(
+                connector=connector, raise_for_status=True
+            )
+        session = _web3_sessions_by_endpoint[endpoint_uri]
         return await _original(endpoint_uri, session)
 
     import web3._utils.request as request_module
