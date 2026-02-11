@@ -122,13 +122,28 @@ The service is configured via `settings/settings.json`. Key configuration sectio
         }
       ],
       "retry": 5,
-      "request_time_out": 5
+      "request_time_out": 60,
+      "sock_read_time_out": 60,
+      "connection_limits": {
+        "max_connections": 100,
+        "max_keepalive_connections": 50,
+        "keepalive_expiry": 300
+      }
     },
     "chain_id": 104,
     "polling_interval": 2
   }
 }
 ```
+
+**RPC timeout precedence** (when both are specified): `sock_read_time_out` overrides `request_time_out`.
+- If `sock_read_time_out` is set: used for sock_read and total timeout (avoids "Timeout on reading data from socket").
+- If `sock_read_time_out` is unset: `request_time_out` is used.
+
+**Environment variables** (when using env-based config, e.g. DSV docker-compose):
+- `RPC_REQUEST_TIMEOUT_S` (default: 60) – fallback read timeout when `RPC_SOCK_READ_TIMEOUT_S` unset
+- `RPC_SOCK_READ_TIMEOUT_S` – overrides `RPC_REQUEST_TIMEOUT_S` when set (recommended: 60–120 for mainnet)
+- `RPC_MAX_CONNECTIONS`, `RPC_MAX_KEEPALIVE_CONNECTIONS`, `RPC_KEEPALIVE_EXPIRY_S` – connection pooling
 
 ### Signers Configuration
 ```json

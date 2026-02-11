@@ -29,7 +29,8 @@
 			  "rate_limit": "100000000/day;18000/minute;300/second"
 			}],
 			"retry": 5,
-			"request_time_out": 5,
+			"request_time_out": 10,
+			"sock_read_time_out": 10,
 			"connection_limits":{
 			  "max_connections": 100,
 			  "max_keepalive_connections": 50,

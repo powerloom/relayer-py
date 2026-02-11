@@ -94,8 +94,13 @@ def load_settings_from_env() -> SettingsConf:
                 archive_nodes=None,
                 force_archive_blocks=None,
                 retry=int(os.getenv("RPC_RETRY", "5")),
-                request_time_out=int(os.getenv("RPC_REQUEST_TIMEOUT_S", "5")),
-                connection_limits=ConnectionLimits()
+                request_time_out=int(os.getenv("RPC_REQUEST_TIMEOUT_S", "60")),
+                sock_read_time_out=int(s) if (s := os.getenv("RPC_SOCK_READ_TIMEOUT_S")) else None,
+                connection_limits=ConnectionLimits(
+                    max_connections=int(os.getenv("RPC_MAX_CONNECTIONS", "100")),
+                    max_keepalive_connections=int(os.getenv("RPC_MAX_KEEPALIVE_CONNECTIONS", "50")),
+                    keepalive_expiry=int(os.getenv("RPC_KEEPALIVE_EXPIRY_S", "300")),
+                )
             ),
             chain_id=int(os.getenv("ANCHOR_CHAIN_ID")),
             polling_interval=2

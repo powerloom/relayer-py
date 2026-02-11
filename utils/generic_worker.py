@@ -26,8 +26,11 @@ from httpx import AsyncClient
 from httpx import AsyncHTTPTransport
 from httpx import Limits
 from httpx import Timeout
+from aiohttp import ClientSession
 from aiohttp import ClientTimeout
+from aiohttp import TCPConnector
 from web3 import AsyncHTTPProvider
+from web3._utils.request import async_cache_and_return_session
 from web3 import AsyncWeb3
 from web3 import Web3
 
@@ -41,6 +44,25 @@ from utils.tx_queue import TransactionQueue
 
 # Day buffer to account for chain migration or other issues
 DAY_BUFFER = 36
+
+_web3_session_patched = False
+
+
+def _patch_web3_session_factory(connector: TCPConnector) -> None:
+    """Patch web3's async session cache to use a shared connector (connection pooling)."""
+    global _web3_session_patched
+    if _web3_session_patched:
+        return
+    _original = async_cache_and_return_session
+
+    async def _cached_session_with_connector(endpoint_uri, session=None):
+        if session is None:
+            session = ClientSession(connector=connector, raise_for_status=True)
+        return await _original(endpoint_uri, session)
+
+    import web3._utils.request as request_module
+    request_module.async_cache_and_return_session = _cached_session_with_connector
+    _web3_session_patched = True
 
 
 class Request(EIP712Struct):
@@ -205,20 +227,23 @@ class GenericAsyncWorker(multiprocessing.Process):
         with open('utils/static/abi.json', 'r') as f:
             self._abi = json.load(f)
 
-        # Initialize Web3 connection with timeout from settings
-        # Use request_time_out from settings.json (or env fallback)
-        # Note: AsyncHTTPProvider uses aiohttp internally, so we need ClientTimeout with granular settings
-        # - connect: timeout for establishing connection including DNS/TCP (2s)
-        # - sock_connect: timeout for TCP socket connection specifically (2s)
-        # - sock_read: timeout for reading response data (main timeout from settings)
-        # - total: overall timeout (slightly higher than sock_read to account for connection overhead)
-        request_timeout = float(settings.anchor_chain.rpc.request_time_out)
+        # Socket read timeout: prefer explicit sock_read_time_out (e.g. RPC_SOCK_READ_TIMEOUT_S), else request_time_out
+        rpc = settings.anchor_chain.rpc
+        read_secs = float(rpc.sock_read_time_out if rpc.sock_read_time_out is not None else rpc.request_time_out)
         timeout_config = ClientTimeout(
-            connect=2.0,  # 2 seconds for connection establishment (includes DNS lookup, TCP handshake)
-            sock_connect=2.0,  # 2 seconds for TCP socket connection specifically
-            sock_read=request_timeout,  # Main timeout for reading response data
-            total=request_timeout + 2.0,  # Total timeout = read timeout + connection overhead
+            connect=2.0,
+            sock_connect=2.0,
+            sock_read=read_secs,
+            total=read_secs + 2.0,
         )
+        # Connection pooling: use a shared TCPConnector so web3's cached session reuses connections
+        limits = rpc.connection_limits
+        connector = TCPConnector(
+            limit=limits.max_connections,
+            limit_per_host=min(30, limits.max_connections),
+            keepalive_timeout=limits.keepalive_expiry,
+        )
+        _patch_web3_session_factory(connector)
         self._w3 = AsyncWeb3(
             AsyncHTTPProvider(
                 settings.anchor_chain.rpc.full_nodes[0].url,

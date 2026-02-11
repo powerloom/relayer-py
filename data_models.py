@@ -47,12 +47,18 @@ class ConnectionLimits(BaseModel):
 
 
 class RPCConfigBase(BaseModel):
-    """Base configuration for RPC nodes including full and archive nodes."""
+    """Base configuration for RPC nodes including full and archive nodes.
+
+    Timeout precedence (when both are specified): sock_read_time_out overrides request_time_out.
+    - If sock_read_time_out is set: used for sock_read and total timeout.
+    - If sock_read_time_out is None: request_time_out is used.
+    """
     full_nodes: List[RPCNodeConfig]
     archive_nodes: Optional[List[RPCNodeConfig]]
     force_archive_blocks: Optional[int]
     retry: int
     request_time_out: int
+    sock_read_time_out: Optional[int] = None
     connection_limits: ConnectionLimits
 
 
